@@ -186,6 +186,8 @@ impl FlacEncoder {
         let sample_rem = sample_count % BLOCK_SIZE;
 
         debug!("[{}] <{}> Adding {sample_quot} blocks of silence and {sample_rem} silent samples to the buffer!", self.guild_id, self.user_id);
+        
+        self.flush_buffer().await;
 
         let silence_block = vec![0; BLOCK_SIZE];
         for _ in 0..sample_quot {
@@ -195,19 +197,25 @@ impl FlacEncoder {
         let excess_silence = vec![0i16; sample_rem];
         self.add_samples(excess_silence.as_slice()).await;
     }
-
-    pub async fn finish(&self) {
+    
+    async fn flush_buffer(&self) {
         let samples_to_encode = {
             let mut buffer = self.buffer.lock().await;
             let sample_count = buffer.len();
             buffer.drain(..sample_count).map(|s| s as i32).collect::<Vec<_>>()
         };
 
-        debug!("[{}] <{}> Dumping {} remaining samples to encoder and flushing file...", self.guild_id, self.user_id, samples_to_encode.len());
-        
+        debug!("[{}] <{}> Flushing {} remaining samples to encoder...", self.guild_id, self.user_id, samples_to_encode.len());
+
         if !samples_to_encode.is_empty() {
             self.encode_frame(&samples_to_encode).await;
         }
+    }
+
+    pub async fn finish(&self) {
+        debug!("[{}] <{}> Dumping buffer and flushing file...", self.guild_id, self.user_id);
+        
+        self.flush_buffer().await;
 
         let mut file = self.file.lock().await;
         if let Err(e) = file.flush().await {
