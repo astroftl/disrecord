@@ -1,0 +1,391 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use circular_buffer::CircularBuffer;
+use dashmap::DashMap;
+use flacenc::error::{Verified, Verify};
+use flacenc::source::{FrameBuf, MemSource, Source};
+use serenity::all::{GuildId, UserId};
+use tokio::sync::{mpsc, Mutex};
+use crate::voice_handler::{VoiceData, VoiceState, SAMPLES_PER_PACKET};
+use flacenc::bitsink::ByteSink;
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
+use flacenc::component::{BitRepr, Stream, StreamInfo};
+use flacenc::{encode_fixed_size_frame};
+use flacenc::config::Encoder;
+
+const BLOCK_SIZE: usize = 4096;
+const BUFFER_N: usize = 2;
+const BUFFER_FRAMES: usize = BUFFER_N * BLOCK_SIZE;
+
+const PACKET_INTERVAL: Duration = Duration::from_millis(20);
+const PACKET_INTERVAL_BUFFER: Duration = Duration::from_millis(5);
+const SAMPLE_RATE: usize = 48000;
+const BITS_PER_SAMPLE: usize = 16;
+const CHANNELS: usize = 1;
+
+pub struct FlacEncoder {
+    user_id: UserId,
+    guild_id: GuildId,
+    buffer: Mutex<CircularBuffer<BUFFER_FRAMES, i16>>,
+    file: Mutex<File>,
+    channels: usize,
+    bits_per_sample: usize,
+    sample_rate: usize,
+    enc_config: Verified<Encoder>,
+    stream_info: StreamInfo,
+}
+
+impl FlacEncoder {
+    pub async fn new(user_id: UserId, guild_id: GuildId, channels: usize, bits_per_sample: usize, sample_rate: usize, file_path: PathBuf) -> Option<Self> {
+        debug!("[{guild_id}] <{user_id}> Initializing FlacEncoder...");
+        let buffer = CircularBuffer::<BUFFER_FRAMES, i16>::new();
+        
+        // Default encoder settings with reasonable compression level
+        let mut enc_config = Encoder::default();
+        enc_config.block_size = BLOCK_SIZE;
+        let enc_config = match enc_config.into_verified() {
+            Ok(x) => x,
+            Err(e) => {
+                error!("[{guild_id}] <{user_id}> Failed to validate encoder config: {e:?}");
+                return None;
+            }
+        };
+
+        let mut stream_info = match StreamInfo::new(sample_rate, channels, bits_per_sample, ) {
+            Ok(x) => x,
+            Err(e) => {
+                error!("[{guild_id}] <{user_id}> Failed to validate StreamInfo: {e:?}");
+                return None;
+            }
+        };
+
+        if let Err(e) = stream_info.set_block_sizes(enc_config.block_size, enc_config.block_size) {
+            warn!("[{guild_id}] <{user_id}> Failed to set block sizes on FlacEncoder: {e:?}");
+        }
+
+        // Create the directory if it doesn't exist
+        if let Some(parent) = file_path.parent() {
+            if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                error!("[{guild_id}] <{user_id}> Failed to create parent directory: {e:?}");
+                return None;
+            }
+        }
+
+        // Open or create the file
+        let file = match File::create(&file_path).await {
+            Ok(x) => x,
+            Err(e) => {
+                error!("[{guild_id}] <{user_id}> Failed to create new file {}: {e:?}", file_path.display());
+                return None;
+            }
+        };
+
+        debug!("[{guild_id}] <{user_id}> Created new file: {:?}", file);
+        
+        Some(Self {
+            user_id,
+            guild_id,
+            buffer: Mutex::new(buffer),
+            file: Mutex::new(file),
+            channels,
+            bits_per_sample,
+            sample_rate,
+            enc_config,
+            stream_info,
+        })
+    }
+    
+    // Initialize the FLAC file with appropriate headers
+    pub async fn start(&self) {
+        debug!("[{}] <{}> Starting FLAC file...", self.guild_id, self.user_id);
+
+        let stream = Stream::with_stream_info(self.stream_info.clone());
+
+        let mut header_sink = ByteSink::new();
+        if let Err(e) = stream.write(&mut header_sink) {
+            error!("[{}] <{}> Failed to write header to stream: {e:?}", self.guild_id, self.user_id);
+        }
+
+        let mut file = self.file.lock().await;
+        if let Err(e) = file.write_all(header_sink.as_slice()).await {
+            error!("[{}] <{}> Failed to write header to file: {e:?}", self.guild_id, self.user_id);
+        }
+    }
+    
+    // Encode a frame of audio data and append to the file
+    async fn encode_frame(&self, samples: &Vec<i32>) {
+        trace!("[{}] <{}> Encoding frame...", self.guild_id, self.user_id);
+
+        let mut src = MemSource::from_samples(samples.as_slice(), self.channels, self.bits_per_sample, self.sample_rate);
+
+        let mut frame_buf = match FrameBuf::with_size(src.channels(), self.enc_config.block_size) {
+            Ok(x) => x,
+            Err(e) => {
+                error!("[{}] <{}> Failed to create new FrameBuf: {e:?}", self.guild_id, self.user_id);
+                return;
+            }
+        };
+
+        let read_samples = match src.read_samples(self.enc_config.block_size, &mut frame_buf) {
+            Ok(x) => x,
+            Err(e) => {
+                error!("[{}] <{}> Failed to read samples from source: {e:?}", self.guild_id, self.user_id);
+                return;
+            }
+        };
+
+        if read_samples == 0 {
+            error!("[{}] <{}> Called encode_frame on empty samples!", self.guild_id, self.user_id);
+            return;
+        }
+
+        let frame = match encode_fixed_size_frame(&self.enc_config, &frame_buf, 0, &self.stream_info) {
+            Ok(x) => x,
+            Err(e) => {
+                error!("[{}] <{}> Failed to encode frame: {e:?}", self.guild_id, self.user_id);
+                return;
+            }
+        };
+
+        let mut sink = ByteSink::new();
+        if let Err(e) = frame.write(&mut sink) {
+            error!("[{}] <{}> Failed to write bytes to sink: {e:?}", self.guild_id, self.user_id);
+            return;
+        }
+
+        let mut file = self.file.lock().await;
+        if let Err(e) = file.write_all(sink.as_slice()).await {
+            error!("[{}] <{}> Failed to write frame to file: {e:?}", self.guild_id, self.user_id);
+            return;
+        }
+    }
+
+    pub async fn add_samples(&self, samples: &[i16]) {
+        let mut buffer = self.buffer.lock().await;
+        buffer.extend_from_slice(samples);
+
+        trace!("[{}] <{}> Adding {} samples to the buffer for...", self.guild_id, self.user_id, samples.len());
+
+        if buffer.len() >= self.enc_config.block_size {
+            trace!("[{}] <{}> Accumulated {} samples, writing block to encoder!", self.guild_id, self.user_id, buffer.len());
+
+            let samples_to_encode = buffer.drain(..BLOCK_SIZE).map(|s| s as i32).collect::<Vec<_>>();
+            drop(buffer); // Release the lock before async operation
+
+            // Encode the frame
+            self.encode_frame(&samples_to_encode).await;
+        }
+    }
+
+    pub async fn add_silence(&self, duration: Duration) {
+        let duration_samples = duration.as_secs_f64() * SAMPLE_RATE as f64;
+        let sample_count = duration_samples.trunc() as usize;
+        let sample_quot = sample_count / BLOCK_SIZE;
+        let sample_rem = sample_count % BLOCK_SIZE;
+
+        debug!("[{}] <{}> Adding {sample_quot} blocks of silence and {sample_rem} silent samples to the buffer!", self.guild_id, self.user_id);
+
+        let silence_block = vec![0; BLOCK_SIZE];
+        for _ in 0..sample_quot {
+            self.encode_frame(&silence_block).await;
+        }
+
+        let excess_silence = vec![0i16; sample_rem];
+        self.add_samples(excess_silence.as_slice()).await;
+    }
+
+    pub async fn finish(&self) {
+        let samples_to_encode = {
+            let mut buffer = self.buffer.lock().await;
+            let sample_count = buffer.len();
+            buffer.drain(..sample_count).map(|s| s as i32).collect::<Vec<_>>()
+        };
+
+        debug!("[{}] <{}> Dumping {} remaining samples to encoder and flushing file...", self.guild_id, self.user_id, samples_to_encode.len());
+        
+        if !samples_to_encode.is_empty() {
+            self.encode_frame(&samples_to_encode).await;
+        }
+
+        let mut file = self.file.lock().await;
+        if let Err(e) = file.flush().await {
+            error!("[{}] <{}> Failed to flush file to disk: {e:?}", self.guild_id, self.user_id);
+            return;
+        }
+    }
+}
+
+impl Drop for FlacEncoder {
+    fn drop(&mut self) {
+        debug!("[{}] <{}> Dropping FlacEncoder!", self.guild_id, self.user_id);
+    }
+}
+
+struct RecordingManager {
+    guild_id: GuildId,
+    encoders: DashMap<UserId, Arc<FlacEncoder>>,
+    last_timestamps: DashMap<UserId, Instant>,
+    base_dir: PathBuf,
+    output_dir: PathBuf,
+    sample_rate: usize,
+    channels: usize,
+    bits_per_sample: usize,
+    started: Option<Instant>,
+}
+
+impl RecordingManager {
+    pub fn new(guild_id: GuildId, base_dir: PathBuf) -> Self {
+        Self {
+            guild_id,
+            encoders: DashMap::new(),
+            last_timestamps: DashMap::new(),
+            base_dir,
+            output_dir: PathBuf::new(),
+            sample_rate: SAMPLE_RATE,
+            channels: CHANNELS,
+            bits_per_sample: BITS_PER_SAMPLE,
+            started: None,
+        }
+    }
+
+    pub async fn get_or_create_encoder(&self, user_id: UserId) -> Option<Arc<FlacEncoder>> {
+        if self.started.is_none() {
+            warn!("[{}] get_or_create_encoder called for user {user_id} when recording not started!", self.guild_id);
+            return None;
+        }
+
+        if let Some(encoder) = self.encoders.get(&user_id) {
+            return Some(encoder.clone());
+        }
+
+        let output_path = self.output_dir.join(format!("{}.flac", user_id));
+        let encoder = FlacEncoder::new(
+            user_id,
+            self.guild_id,
+            self.channels,
+            self.bits_per_sample,
+            self.sample_rate,
+            output_path,
+        ).await;
+
+        if let Some(enc) = encoder {
+            enc.start().await;
+
+            if let Some(started) = self.started {
+                let silence_duration = Instant::now().duration_since(started);
+                enc.add_silence(silence_duration).await;
+            }
+
+            let encoder = Arc::new(enc);
+
+            self.encoders.insert(user_id, encoder.clone());
+
+            Some(encoder)
+        } else {
+            error!("[{}] Failed to create new FlacEncoder for user {user_id}!", self.guild_id);
+            None
+        }
+    }
+
+    pub async fn add_audio_data(&self, user_id: UserId, timestamp: Instant, samples: &[i16]) {
+        if self.started.is_none() {
+            return;
+        }
+
+        if let Some(encoder) = self.get_or_create_encoder(user_id).await {
+            if let Some(mut last_timestamp) = self.last_timestamps.get_mut(&user_id) {
+                if let Some(delta) = timestamp.checked_duration_since(*last_timestamp) {
+                    if delta > PACKET_INTERVAL + PACKET_INTERVAL_BUFFER { // Extra buffer here for hiccups.
+                        let extra = delta.saturating_sub(Duration::from_millis(20));
+                        warn!("[{}] Packet from user {user_id} delta of {}ms is more than threshold {}ms! Adding silence...", self.guild_id, delta.as_millis_f64(), (PACKET_INTERVAL + PACKET_INTERVAL_BUFFER).as_millis());
+                        encoder.add_silence(extra).await;
+                    }
+                } else {
+                    warn!("[{}] User {user_id} went back in time! old = {:?}, new = {:?}", self.guild_id, last_timestamp, timestamp);
+                }
+
+                *last_timestamp = timestamp;
+            } else {
+                self.last_timestamps.insert(user_id, timestamp);
+            }
+
+            encoder.add_samples(samples).await;
+        } else {
+            error!("[{}] Failed to get FlacEncoder for user {user_id}", self.guild_id);
+        }
+    }
+
+    pub async fn start(&mut self) {
+        info!("[{}] Beginning recording...", self.guild_id);
+
+        self.started = Some(Instant::now());
+        self.output_dir = self.base_dir.join(format!("{}", self.guild_id)).join(format!("{}", chrono::Local::now().format("%Y_%m_%d_%H_%M_%S")));
+    }
+
+    pub async fn finish(&mut self) {
+        self.started = None;
+
+        info!("[{}] Stopping recording...", self.guild_id);
+
+        for enc in &self.encoders {
+            if let Some(last_timestamp) = self.last_timestamps.get_mut(&enc.user_id) {
+                if let Some(delta) = Instant::now().checked_duration_since(*last_timestamp) {
+                    if let Some(extra) = delta.checked_sub(Duration::from_millis(20)) {
+                        debug!("[{}] <{}> Adding {}s of silence to the tail of the file...", self.guild_id, enc.user_id, extra.as_secs_f64());
+                        enc.add_silence(extra).await;
+                    }
+                }
+            }
+
+            enc.finish().await;
+        }
+
+        self.encoders.clear();
+        self.last_timestamps.clear();
+
+        debug!("[{}] Encoders cleared.", self.guild_id);
+    }
+}
+
+pub struct Recorder {
+    data: Arc<Mutex<RecordingManager>>,
+}
+
+impl Recorder {
+    pub fn new(guild_id: GuildId, mut voice_rx: mpsc::Receiver<VoiceData>) -> Self {
+        let data = Arc::new(Mutex::new(RecordingManager::new(
+            guild_id,
+            PathBuf::from("recordings"),
+        )));
+        
+        let data_cloned = data.clone();
+        
+        tokio::spawn(async move {
+            while let Some(voice_data) = voice_rx.recv().await {
+                for voice_state in voice_data.user_voice_states {
+                    match voice_state.voice_state {
+                        VoiceState::Speaking(samples) => {
+                            data.lock().await.add_audio_data(voice_state.user_id, voice_state.timestamp, &samples).await;
+                        }
+                        VoiceState::Silent => {
+                            let samples = vec![0; SAMPLES_PER_PACKET as usize];
+                            data.lock().await.add_audio_data(voice_state.user_id, voice_state.timestamp, &samples).await;
+                        }
+                    }
+                }
+            }
+        });
+
+        Self { data: data_cloned }
+    }
+
+    pub async fn begin_recording(&mut self) {
+        self.data.lock().await.start().await;
+    }
+
+    pub async fn finish_recording(&mut self) {
+        self.data.lock().await.finish().await;
+    }
+}

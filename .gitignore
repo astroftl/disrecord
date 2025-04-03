@@ -1,0 +1,6 @@
+/.idea/
+/target/
+/recordings/
+/Cargo.lock
+/.env
+/*.log

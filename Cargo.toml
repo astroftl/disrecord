@@ -1,0 +1,16 @@
+[package]
+name = "astrobot"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+log = { version = "0", features = ["release_max_level_debug"] }
+chrono = "0"
+fern = { version = "0", features = ["colored"] }
+dotenv = "0"
+tokio = { version = "1", features = ["full"] }
+serenity = { version = "0", default-features = false, features = ["full"] }
+songbird = {  version = "0", default-features = true, features = ["receive"] }
+dashmap = "6"
+flacenc = "0"
+circular-buffer = "1"
