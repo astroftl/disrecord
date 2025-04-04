@@ -86,7 +86,7 @@ fn setup_logger() {
             _ => panic!("Unknown log level: {}", level),
         }
     } else {
-        LevelFilter::Debug
+        LevelFilter::Trace
     };
 
     let mut dispatch = fern::Dispatch::new()

@@ -14,6 +14,7 @@ use tokio::io::AsyncWriteExt;
 use flacenc::component::{BitRepr, Stream, StreamInfo};
 use flacenc::{encode_fixed_size_frame};
 use flacenc::config::Encoder;
+use serenity::futures::executor::block_on;
 
 const BLOCK_SIZE: usize = 4096;
 const BUFFER_N: usize = 2;
@@ -205,9 +206,8 @@ impl FlacEncoder {
             buffer.drain(..sample_count).map(|s| s as i32).collect::<Vec<_>>()
         };
 
-        debug!("[{}] <{}> Flushing {} remaining samples to encoder...", self.guild_id, self.user_id, samples_to_encode.len());
-
         if !samples_to_encode.is_empty() {
+            debug!("[{}] <{}> Flushing {} remaining samples to encoder...", self.guild_id, self.user_id, samples_to_encode.len());
             self.encode_frame(&samples_to_encode).await;
         }
     }
@@ -227,7 +227,10 @@ impl FlacEncoder {
 
 impl Drop for FlacEncoder {
     fn drop(&mut self) {
-        debug!("[{}] <{}> Dropping FlacEncoder!", self.guild_id, self.user_id);
+        debug!("[{}] <{}> Finishing FlacEncoder before Drop...", self.guild_id, self.user_id);
+        let f = self.finish();
+        block_on(f);
+        trace!("[{}] <{}> FlacEncoder dropped!", self.guild_id, self.user_id);
     }
 }
 
@@ -260,7 +263,7 @@ impl RecordingManager {
 
     pub async fn get_or_create_encoder(&self, user_id: UserId) -> Option<Arc<FlacEncoder>> {
         if self.started.is_none() {
-            warn!("[{}] get_or_create_encoder called for user {user_id} when recording not started!", self.guild_id);
+            warn!("[{}] <{user_id}> get_or_create_encoder called when recording not started!", self.guild_id);
             return None;
         }
 
@@ -292,7 +295,7 @@ impl RecordingManager {
 
             Some(encoder)
         } else {
-            error!("[{}] Failed to create new FlacEncoder for user {user_id}!", self.guild_id);
+            error!("[{}] <{user_id}> Failed to create new FlacEncoder!", self.guild_id);
             None
         }
     }
@@ -307,11 +310,11 @@ impl RecordingManager {
                 if let Some(delta) = timestamp.checked_duration_since(*last_timestamp) {
                     if delta > PACKET_INTERVAL + PACKET_INTERVAL_BUFFER { // Extra buffer here for hiccups.
                         let extra = delta.saturating_sub(Duration::from_millis(20));
-                        warn!("[{}] Packet from user {user_id} delta of {}ms is more than threshold {}ms! Adding silence...", self.guild_id, delta.as_millis_f64(), (PACKET_INTERVAL + PACKET_INTERVAL_BUFFER).as_millis());
+                        warn!("[{}] <{user_id}> Packet delta of {}ms is more than threshold {}ms! Adding silence...", self.guild_id, delta.as_millis_f64(), (PACKET_INTERVAL + PACKET_INTERVAL_BUFFER).as_millis());
                         encoder.add_silence(extra).await;
                     }
                 } else {
-                    warn!("[{}] User {user_id} went back in time! old = {:?}, new = {:?}", self.guild_id, last_timestamp, timestamp);
+                    warn!("[{}] <{user_id}> We went back in time! old = {:?}, new = {:?}", self.guild_id, last_timestamp, timestamp);
                 }
 
                 *last_timestamp = timestamp;
@@ -321,7 +324,7 @@ impl RecordingManager {
 
             encoder.add_samples(samples).await;
         } else {
-            error!("[{}] Failed to get FlacEncoder for user {user_id}", self.guild_id);
+            error!("[{}] <{user_id}> Failed to get FlacEncoder!", self.guild_id);
         }
     }
 
