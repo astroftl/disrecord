@@ -1,4 +1,4 @@
-use serenity::all::{ChannelId, CommandInteraction, Context, CreateInteractionResponseMessage, InteractionContext};
+use serenity::all::{ChannelId, CommandInteraction, Context, CreateInteractionResponseMessage, InteractionContext, OnlineStatus};
 use serenity::builder::{CreateCommand, CreateInteractionResponse};
 use crate::discord::DiscordData;
 
@@ -34,6 +34,13 @@ pub async fn run(ctx: &Context, cmd: &CommandInteraction) {
         } else {
             let data = ctx.data.read().await.get::<DiscordData>().unwrap().clone();
             data.voice_commands.remove(&guild_id);
+
+            let status = OnlineStatus::Online;
+            ctx.set_presence(None, status);
+
+            guild_id.edit_nickname(ctx, None).await.unwrap_or_else(|e| {
+                warn!("Failed to set nickname: {e:?}");
+            });
 
             let resp = CreateInteractionResponseMessage::new()
                 .content(format!("Left <#{channel_id}>"))

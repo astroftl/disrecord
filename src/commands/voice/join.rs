@@ -7,7 +7,7 @@ use crate::voice_handler::{VoiceCommand, VoiceReceiver};
 
 pub const NAME: &str = "join";
 
-pub async fn do_join(ctx: &Context, guild_id: GuildId, channel_id: ChannelId) -> Result<Sender<VoiceCommand>, ()> {
+pub async fn do_join(ctx: &Context, guild_id: GuildId, channel_id: ChannelId) -> Result<Sender<VoiceCommand>, String> {
     debug!("Joining: {channel_id:?} @ {guild_id:?}");
 
     let manager = songbird::get(ctx)
@@ -24,7 +24,7 @@ pub async fn do_join(ctx: &Context, guild_id: GuildId, channel_id: ChannelId) ->
         let (cmd_tx, cmd_rx) = channel(32);
         let data = ctx.data.read().await.get::<DiscordData>().unwrap().clone();
         data.voice_commands.insert(guild_id, cmd_tx.clone());
-        
+
         let evt_receiver = VoiceReceiver::new(guild_id, cmd_rx).await;
 
         call.add_global_event(CoreEvent::SpeakingStateUpdate.into(), evt_receiver.clone());
@@ -38,17 +38,17 @@ pub async fn do_join(ctx: &Context, guild_id: GuildId, channel_id: ChannelId) ->
             cmd_tx.clone()
         } else {
             error!("Failed to get command sender for existing call handler!");
-            return Err(());
+            return Err("Failed to get command sender for existing call handler!".to_string());
         }
     };
 
-    if let Ok(_) = manager.join(guild_id, channel_id).await {
-        Ok(cmd_tx)
-    } else {
+    if let Err(e) = manager.join(guild_id, channel_id).await {
         // Although we failed to join, we need to clear out existing event handlers on the call.
         _ = manager.remove(guild_id).await;
-        
-        Err(())
+
+        Err(format!("Failed to join voice channel: {e:?}"))
+    } else {
+        Ok(cmd_tx)
     }
 }
 
@@ -93,22 +93,25 @@ pub async fn run(ctx: &Context, cmd: &CommandInteraction) {
     };
 
     if let Some(channel_id) = channel_id {
-        if let Ok(_) = do_join(ctx, guild_id, channel_id).await {
-            let resp = CreateInteractionResponseMessage::new()
-                .content(format!("Joined <#{channel_id}>"))
-                .ephemeral(true);
+        match do_join(ctx, guild_id, channel_id).await {
+            Ok(_) => {
+                let resp = CreateInteractionResponseMessage::new()
+                    .content(format!("Joined <#{channel_id}>"))
+                    .ephemeral(true);
 
-            cmd.create_response(ctx, CreateInteractionResponse::Message(resp)).await.unwrap_or_else(|e| {
-                error!("Error responding to the interaction: {e:?}");
-            });
-        } else {
-            let resp = CreateInteractionResponseMessage::new()
-                .content("Failed to join channel!")
-                .ephemeral(true);
+                cmd.create_response(ctx, CreateInteractionResponse::Message(resp)).await.unwrap_or_else(|e| {
+                    error!("Error responding to the interaction: {e:?}");
+                });
+            }
+            Err(e) => {
+                let resp = CreateInteractionResponseMessage::new()
+                    .content(format!("{e:?}"))
+                    .ephemeral(true);
 
-            cmd.create_response(ctx, CreateInteractionResponse::Message(resp)).await.unwrap_or_else(|e| {
-                error!("Error responding to the interaction: {e:?}");
-            });
+                cmd.create_response(ctx, CreateInteractionResponse::Message(resp)).await.unwrap_or_else(|e| {
+                    error!("Error responding to the interaction: {e:?}");
+                });
+            }
         }
     } else {
         let resp = CreateInteractionResponseMessage::new()

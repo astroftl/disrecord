@@ -379,9 +379,3 @@ impl Recorder {
         });
     }
 }
-
-impl Drop for Recorder {
-    fn drop(&mut self) {
-        debug!("[{}] Recorder dropped!", self.guild_id);
-    }
-}

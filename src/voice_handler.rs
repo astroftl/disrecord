@@ -41,7 +41,7 @@ pub struct InnerReceiver {
     known_ssrcs: DashMap<u32, UserId>,
     guild_id: GuildId,
     recorder: Arc<Mutex<Recorder>>,
-    voice_data: Sender<VoiceData>,
+    voice_tx: Sender<VoiceData>,
 }
 
 impl VoiceReceiver {
@@ -57,7 +57,7 @@ impl VoiceReceiver {
                 known_ssrcs: DashMap::new(),
                 guild_id,
                 recorder,
-                voice_data: voice_tx,
+                voice_tx,
             }),
         };
 
@@ -83,18 +83,6 @@ impl VoiceReceiver {
                 self.inner.recorder.lock().await.finish().await;
             }
         }
-    }
-}
-
-impl Drop for VoiceReceiver {
-    fn drop(&mut self) {
-        debug!("[{}] VoiceReciver dropped!", self.inner.guild_id);
-    }
-}
-
-impl Drop for InnerReceiver {
-    fn drop(&mut self) {
-        debug!("[{}] InnerReceiver dropped!", self.guild_id);
     }
 }
 
@@ -134,7 +122,7 @@ impl EventHandler for VoiceReceiver {
 
                 trace!("[{}] Sending VoiceData: {new_data:?}", self.inner.guild_id);
 
-                if let Err(e) = self.inner.voice_data.send(new_data).await {
+                if let Err(e) = self.inner.voice_tx.send(new_data).await {
                     error!("[{}] Failed to send VoiceData over channel: {e:?}", self.inner.guild_id);
                 }
             },
