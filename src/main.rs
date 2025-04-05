@@ -10,7 +10,6 @@ extern crate log;
 
 use std::env;
 use std::sync::Arc;
-use dashmap::DashMap;
 use fern::colors::{Color, ColoredLevelConfig};
 use log::LevelFilter;
 use serenity::all::ApplicationId;
@@ -32,14 +31,10 @@ async fn main() {
     setup_logger();
 
     let discord_data = DiscordData {
-        voice_commands: DashMap::new(),
     };
 
     let intents = GatewayIntents::non_privileged();
 
-    // Here, we need to configure Songbird to decode all incoming voice packets.
-    // If you want, you can do this on a per-call basis---here, we need it to
-    // read the audio data that other people are sending us!
     let songbird_config = Config::default()
         .decode_channels(Channels::Mono)
         .decode_mode(DecodeMode::Decode);
@@ -52,7 +47,7 @@ async fn main() {
         .await
         .expect("Error creating client");
 
-    info!("Starting Astrobot...");
+    info!("Starting Disrecord...");
 
     if let Err(why) = client.start().await {
         error!("Client error: {:?}", why);
@@ -104,10 +99,10 @@ fn setup_logger() {
             ));
         })
         .level(LevelFilter::Warn)
-        .level_for("astrobot", log_level)
+        .level_for("disrecord", log_level)
         .chain(std::io::stdout());
 
-    match fern::log_file("astrobot.log") {
+    match fern::log_file("disrecord.log") {
         Ok(logfile) => {
             dispatch = dispatch.chain(logfile);
         }

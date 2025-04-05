@@ -1,14 +1,19 @@
-use serenity::all::{ChannelId, CommandInteraction, Context, CreateInteractionResponseMessage, InteractionContext, OnlineStatus};
+use serenity::all::{ChannelId, CommandInteraction, Context, CreateInteractionResponseMessage, GuildId, InteractionContext, OnlineStatus};
 use serenity::builder::{CreateCommand, CreateInteractionResponse};
-use crate::discord::DiscordData;
 
-pub const NAME: &str = "leave";
+pub const NAME: &str = "finish";
+
+pub async fn reset_presence(ctx: &Context, guild_id: GuildId) {
+    let status = OnlineStatus::Online;
+    ctx.set_presence(None, status);
+
+    guild_id.edit_nickname(ctx, None).await.unwrap_or_else(|e| {
+        warn!("Failed to set nickname: {e}");
+    });
+}
 
 pub async fn run(ctx: &Context, cmd: &CommandInteraction) {
     let guild_id = cmd.guild_id.unwrap();
-    
-    let data = ctx.data.read().await.get::<DiscordData>().unwrap().clone();
-    data.voice_commands.remove(&guild_id);
 
     let manager = songbird::get(ctx)
         .await
@@ -25,22 +30,14 @@ pub async fn run(ctx: &Context, cmd: &CommandInteraction) {
 
         if let Err(e) = manager.remove(guild_id).await {
             let resp = CreateInteractionResponseMessage::new()
-                .content(format!("Failed: {e:?}"))
+                .content(format!("Failed to leave channel: {e}"))
                 .ephemeral(true);
 
             cmd.create_response(ctx, CreateInteractionResponse::Message(resp)).await.unwrap_or_else(|e| {
                 error!("Error responding to the interaction: {e:?}");
             });
         } else {
-            let data = ctx.data.read().await.get::<DiscordData>().unwrap().clone();
-            data.voice_commands.remove(&guild_id);
-
-            let status = OnlineStatus::Online;
-            ctx.set_presence(None, status);
-
-            guild_id.edit_nickname(ctx, None).await.unwrap_or_else(|e| {
-                warn!("Failed to set nickname: {e:?}");
-            });
+            reset_presence(ctx, guild_id).await;
 
             let resp = CreateInteractionResponseMessage::new()
                 .content(format!("Left <#{channel_id}>"))
@@ -65,6 +62,6 @@ pub async fn run(ctx: &Context, cmd: &CommandInteraction) {
 
 pub fn register() -> CreateCommand {
     CreateCommand::new(NAME)
-        .description("Leave a voice channel")
+        .description("Finalize recording and leave voice channel")
         .add_context(InteractionContext::Guild)
 }

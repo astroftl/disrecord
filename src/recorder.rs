@@ -243,36 +243,32 @@ impl Drop for FlacEncoder {
 pub struct Recorder {
     guild_id: GuildId,
     encoders: DashMap<UserId, Arc<FlacEncoder>>,
-    base_dir: PathBuf,
     output_dir: PathBuf,
     sample_rate: usize,
     channels: usize,
     bits_per_sample: usize,
     known_users: Mutex<HashSet<UserId>>,
-    started: Option<Instant>,
+    started: Instant,
 }
 
 impl Recorder {
     pub fn new(guild_id: GuildId) -> Self {
+        let base_dir= PathBuf::from("recordings");
+        let output_dir = base_dir.join(format!("{}", guild_id)).join(format!("{}", chrono::Local::now().format("%Y_%m_%d_%H_%M_%S")));
+
         Self {
             guild_id,
             encoders: DashMap::new(),
-            base_dir: PathBuf::from("recordings"),
-            output_dir: PathBuf::new(),
+            output_dir,
             sample_rate: SAMPLE_RATE,
             channels: CHANNELS,
             bits_per_sample: BITS_PER_SAMPLE,
             known_users: Mutex::new(HashSet::new()),
-            started: None,
+            started: Instant::now(),
         }
     }
 
     pub async fn get_or_create_encoder(&self, user_id: UserId, timestamp: Instant) -> Option<Arc<FlacEncoder>> {
-        if self.started.is_none() {
-            warn!("[{}] <{user_id}> get_or_create_encoder called when recording not started!", self.guild_id);
-            return None;
-        }
-
         if let Some(encoder) = self.encoders.get(&user_id) {
             return Some(encoder.clone());
         }
@@ -290,10 +286,8 @@ impl Recorder {
         if let Some(enc) = encoder {
             enc.start().await;
 
-            if let Some(started) = self.started {
-                let silence_duration = timestamp.duration_since(started);
-                enc.add_silence(silence_duration).await;
-            }
+            let silence_duration = timestamp.duration_since(self.started);
+            enc.add_silence(silence_duration).await;
 
             let encoder = Arc::new(enc);
 
@@ -307,10 +301,6 @@ impl Recorder {
     }
 
     pub async fn add_audio_data(&self, user_id: UserId, timestamp: Instant, samples: &[i16]) {
-        if self.started.is_none() {
-            return;
-        }
-
         if let Some(encoder) = self.get_or_create_encoder(user_id, timestamp).await {
             encoder.add_samples(samples).await;
         } else {
@@ -319,10 +309,6 @@ impl Recorder {
     }
 
     pub async fn process_voice_data(&self, data: VoiceData) {
-        if self.started.is_none() {
-            return;
-        }
-
         let mut silent_this_packet = self.known_users.lock().await.clone();
 
         for voice_state in data.user_voice_states {
@@ -347,29 +333,7 @@ impl Recorder {
         }
     }
 
-    pub async fn start(&mut self) {
-        if self.started.is_none() {
-            info!("[{}] Beginning recording...", self.guild_id);
-
-            self.started = Some(Instant::now());
-            self.output_dir = self.base_dir.join(format!("{}", self.guild_id)).join(format!("{}", chrono::Local::now().format("%Y_%m_%d_%H_%M_%S")));
-        }
-    }
-
-    pub async fn finish(&mut self) {
-        self.started = None;
-
-        info!("[{}] Stopping recording...", self.guild_id);
-
-        self.encoders.clear();
-
-        // This clear prevents users from a previous recording who have left and not rejoined from being included in future recordings.
-        self.known_users.lock().await.clear();
-
-        debug!("[{}] Encoders and known users cleared.", self.guild_id);
-    }
-
-    pub fn run (recorder: Arc<Mutex<Self>>, mut voice_rx: mpsc::Receiver<VoiceData>) {
+    pub fn run(recorder: Arc<Mutex<Self>>, mut voice_rx: mpsc::Receiver<VoiceData>) {
         tokio::spawn(async move {
             while let Some(voice_data) = voice_rx.recv().await {
                 recorder.lock().await.process_voice_data(voice_data).await;

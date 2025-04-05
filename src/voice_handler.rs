@@ -5,7 +5,7 @@ use serenity::async_trait;
 use serenity::model::voice_gateway::payload::{ClientDisconnect, Speaking};
 use serenity::model::id::{UserId, GuildId};
 use songbird::{EventContext, EventHandler};
-use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::Mutex;
 use crate::recorder::Recorder;
 
@@ -27,11 +27,6 @@ pub struct VoiceData {
     pub user_voice_states: Vec<UserVoiceState>,
 }
 
-pub enum VoiceCommand {
-    Record,
-    Finish,
-}
-
 #[derive(Clone)]
 pub struct VoiceReceiver {
     pub inner: Arc<InnerReceiver>,
@@ -40,48 +35,25 @@ pub struct VoiceReceiver {
 pub struct InnerReceiver {
     known_ssrcs: DashMap<u32, UserId>,
     guild_id: GuildId,
-    recorder: Arc<Mutex<Recorder>>,
+    _recorder: Arc<Mutex<Recorder>>,
     voice_tx: Sender<VoiceData>,
 }
 
 impl VoiceReceiver {
-    pub async fn new(guild_id: GuildId, mut cmd_rx: Receiver<VoiceCommand>) -> Self {
+    pub async fn new(guild_id: GuildId) -> Self {
 
         let (voice_tx, voice_rx) = channel(50);
 
         let recorder = Arc::new(Mutex::new(Recorder::new(guild_id)));
         Recorder::run(recorder.clone(), voice_rx);
 
-        let receiver = Self {
+        Self {
             inner: Arc::new(InnerReceiver {
                 known_ssrcs: DashMap::new(),
                 guild_id,
-                recorder,
+                _recorder: recorder,
                 voice_tx,
             }),
-        };
-
-        let receiver_clone = receiver.clone();
-
-        tokio::spawn(async move {
-            while let Some(command) = cmd_rx.recv().await {
-                receiver_clone.handle_command(command).await;
-            }
-        });
-        
-        receiver
-    }
-    
-    async fn handle_command(&self, command: VoiceCommand) {
-        match command {
-            VoiceCommand::Record => {
-                debug!("[{}] Got START_RECORDING command!", self.inner.guild_id);
-                self.inner.recorder.lock().await.start().await;
-            }
-            VoiceCommand::Finish => {
-                debug!("[{}] Got STOP_RECORDING command!", self.inner.guild_id);
-                self.inner.recorder.lock().await.finish().await;
-            }
         }
     }
 }
@@ -97,7 +69,7 @@ impl EventHandler for VoiceReceiver {
                     let user = UserId::from(user.0);
                     let old_ssrc = self.inner.known_ssrcs.insert(*ssrc, user);
                     if old_ssrc.is_none() {
-                        debug!("[{}] Speaking state update: user {user_id:?} has SSRC {ssrc:?}, using {speaking:?}", self.inner.guild_id);
+                        debug!("[{}] Found new user {} with SSRC {ssrc}, using {speaking:?}!", self.inner.guild_id, user);
                     }
                 }
             },
@@ -127,12 +99,7 @@ impl EventHandler for VoiceReceiver {
                 }
             },
             Ctx::ClientDisconnect(ClientDisconnect { user_id, .. }) => {
-                // You can implement your own logic here to handle a user who has left the
-                // voice channel e.g., finalise processing of statistics etc.
-                // You will typically need to map the User ID to their SSRC; observed when
-                // first speaking.
-
-                info!("[{}] Client disconnected: user {user_id:?}", self.inner.guild_id);
+                info!("[{}] User {user_id} disconnected!", self.inner.guild_id);
             },
             _ => {
                 // We won't be registering this struct for any more event classes.

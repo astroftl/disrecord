@@ -1,18 +1,14 @@
 use std::sync::Arc;
-use dashmap::DashMap;
 use serenity::{
     async_trait,
     client::{Context, EventHandler},
     model::gateway::Ready,
 };
-use serenity::all::{Command, GuildId, Interaction};
+use serenity::all::{Command, Interaction};
 use serenity::prelude::TypeMapKey;
-use tokio::sync::mpsc::Sender;
 use crate::commands;
-use crate::voice_handler::VoiceCommand;
 
 pub struct DiscordData {
-    pub(crate) voice_commands: DashMap<GuildId, Sender<VoiceCommand>>
 }
 
 impl TypeMapKey for DiscordData {
@@ -28,10 +24,9 @@ impl EventHandler for Events {
 
         Command::set_global_commands(&ctx.http,
                                      vec![
-                                         commands::voice::join::register(),
-                                         commands::voice::leave::register(),
-                                         commands::voice::recording::record::register(),
-                                         commands::voice::recording::finish::register(),
+                                         commands::start::register(),
+                                         commands::finish::register(),
+                                         commands::rejoin::register(),
                                      ]
         ).await.expect("Failed to register global commands!");
     }
@@ -39,10 +34,9 @@ impl EventHandler for Events {
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         if let Interaction::Command(command) = interaction {
             match command.data.name.as_str() {
-                commands::voice::join::NAME => commands::voice::join::run(&ctx, &command).await,
-                commands::voice::leave::NAME => commands::voice::leave::run(&ctx, &command).await,
-                commands::voice::recording::record::NAME => commands::voice::recording::record::run(&ctx, &command).await,
-                commands::voice::recording::finish::NAME => commands::voice::recording::finish::run(&ctx, &command).await,
+                commands::start::NAME => commands::start::run(&ctx, &command).await,
+                commands::finish::NAME => commands::finish::run(&ctx, &command).await,
+                commands::rejoin::NAME => commands::rejoin::run(&ctx, &command).await,
                 _ => {}
             }
         }
