@@ -1,4 +1,4 @@
-use serenity::all::{ActivityData, CommandInteraction, Context, CreateInteractionResponseMessage, InteractionContext, OnlineStatus};
+use serenity::all::{ActivityData, ChannelType, CommandInteraction, CommandOptionType, Context, CreateCommandOption, CreateInteractionResponseMessage, InteractionContext, OnlineStatus};
 use serenity::builder::{CreateCommand, CreateInteractionResponse};
 use crate::discord::DiscordData;
 use crate::voice_handler::VoiceCommand;
@@ -71,4 +71,8 @@ pub fn register() -> CreateCommand {
     CreateCommand::new(NAME)
         .description("Being recording current voice channel")
         .add_context(InteractionContext::Guild)
+        .add_option(
+            CreateCommandOption::new(CommandOptionType::Channel, "channel", "Voice channel to record")
+                .channel_types(vec![ChannelType::Voice])
+        )
 }

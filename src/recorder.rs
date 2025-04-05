@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -7,7 +8,7 @@ use flacenc::error::{Verified, Verify};
 use flacenc::source::{FrameBuf, MemSource, Source};
 use serenity::all::{GuildId, UserId};
 use tokio::sync::{mpsc, Mutex};
-use crate::voice_handler::{VoiceData, VoiceState, SAMPLES_PER_PACKET};
+use crate::voice_handler::{VoiceData, VoiceState};
 use flacenc::bitsink::ByteSink;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
@@ -20,8 +21,9 @@ const BLOCK_SIZE: usize = 4096;
 const BUFFER_N: usize = 2;
 const BUFFER_FRAMES: usize = BUFFER_N * BLOCK_SIZE;
 
-const PACKET_INTERVAL: Duration = Duration::from_millis(20);
-const PACKET_INTERVAL_BUFFER: Duration = Duration::from_millis(5);
+const SAMPLES_PER_PACKET: usize = 960;
+const SILENT_SAMPLES: &[i16; SAMPLES_PER_PACKET] = &[0; SAMPLES_PER_PACKET];
+
 const SAMPLE_RATE: usize = 48000;
 const BITS_PER_SAMPLE: usize = 16;
 const CHANNELS: usize = 1;
@@ -167,7 +169,7 @@ impl FlacEncoder {
         let mut buffer = self.buffer.lock().await;
         buffer.extend_from_slice(samples);
 
-        trace!("[{}] <{}> Adding {} samples to the buffer for...", self.guild_id, self.user_id, samples.len());
+        trace!("[{}] <{}> Adding {} samples to the buffer...", self.guild_id, self.user_id, samples.len());
 
         if buffer.len() >= self.enc_config.block_size {
             trace!("[{}] <{}> Accumulated {} samples, writing block to encoder!", self.guild_id, self.user_id, buffer.len());
@@ -181,12 +183,16 @@ impl FlacEncoder {
     }
 
     pub async fn add_silence(&self, duration: Duration) {
+        if duration.is_zero() {
+            return;
+        }
+
         let duration_samples = duration.as_secs_f64() * SAMPLE_RATE as f64;
         let sample_count = duration_samples.trunc() as usize;
         let sample_quot = sample_count / BLOCK_SIZE;
         let sample_rem = sample_count % BLOCK_SIZE;
 
-        debug!("[{}] <{}> Adding {sample_quot} blocks of silence and {sample_rem} silent samples to the buffer!", self.guild_id, self.user_id);
+        debug!("[{}] <{}> Adding {}s worth of silence! [{sample_quot} blocks; {sample_rem} samples]", self.guild_id, self.user_id, duration.as_secs_f64());
         
         self.flush_buffer().await;
 
@@ -234,34 +240,34 @@ impl Drop for FlacEncoder {
     }
 }
 
-struct RecordingManager {
+pub struct Recorder {
     guild_id: GuildId,
     encoders: DashMap<UserId, Arc<FlacEncoder>>,
-    last_timestamps: DashMap<UserId, Instant>,
     base_dir: PathBuf,
     output_dir: PathBuf,
     sample_rate: usize,
     channels: usize,
     bits_per_sample: usize,
+    known_users: Mutex<HashSet<UserId>>,
     started: Option<Instant>,
 }
 
-impl RecordingManager {
-    pub fn new(guild_id: GuildId, base_dir: PathBuf) -> Self {
+impl Recorder {
+    pub fn new(guild_id: GuildId) -> Self {
         Self {
             guild_id,
             encoders: DashMap::new(),
-            last_timestamps: DashMap::new(),
-            base_dir,
+            base_dir: PathBuf::from("recordings"),
             output_dir: PathBuf::new(),
             sample_rate: SAMPLE_RATE,
             channels: CHANNELS,
             bits_per_sample: BITS_PER_SAMPLE,
+            known_users: Mutex::new(HashSet::new()),
             started: None,
         }
     }
 
-    pub async fn get_or_create_encoder(&self, user_id: UserId) -> Option<Arc<FlacEncoder>> {
+    pub async fn get_or_create_encoder(&self, user_id: UserId, timestamp: Instant) -> Option<Arc<FlacEncoder>> {
         if self.started.is_none() {
             warn!("[{}] <{user_id}> get_or_create_encoder called when recording not started!", self.guild_id);
             return None;
@@ -285,7 +291,7 @@ impl RecordingManager {
             enc.start().await;
 
             if let Some(started) = self.started {
-                let silence_duration = Instant::now().duration_since(started);
+                let silence_duration = timestamp.duration_since(started);
                 enc.add_silence(silence_duration).await;
             }
 
@@ -305,26 +311,39 @@ impl RecordingManager {
             return;
         }
 
-        if let Some(encoder) = self.get_or_create_encoder(user_id).await {
-            if let Some(mut last_timestamp) = self.last_timestamps.get_mut(&user_id) {
-                if let Some(delta) = timestamp.checked_duration_since(*last_timestamp) {
-                    if delta > PACKET_INTERVAL + PACKET_INTERVAL_BUFFER { // Extra buffer here for hiccups.
-                        let extra = delta.saturating_sub(Duration::from_millis(20));
-                        warn!("[{}] <{user_id}> Packet delta of {}ms is more than threshold {}ms! Adding silence...", self.guild_id, delta.as_millis_f64(), (PACKET_INTERVAL + PACKET_INTERVAL_BUFFER).as_millis());
-                        encoder.add_silence(extra).await;
-                    }
-                } else {
-                    warn!("[{}] <{user_id}> We went back in time! old = {:?}, new = {:?}", self.guild_id, last_timestamp, timestamp);
-                }
-
-                *last_timestamp = timestamp;
-            } else {
-                self.last_timestamps.insert(user_id, timestamp);
-            }
-
+        if let Some(encoder) = self.get_or_create_encoder(user_id, timestamp).await {
             encoder.add_samples(samples).await;
         } else {
             error!("[{}] <{user_id}> Failed to get FlacEncoder!", self.guild_id);
+        }
+    }
+
+    pub async fn process_voice_data(&self, data: VoiceData) {
+        if self.started.is_none() {
+            return;
+        }
+
+        let mut silent_this_packet = self.known_users.lock().await.clone();
+
+        for voice_state in data.user_voice_states {
+            if !silent_this_packet.contains(&voice_state.user_id) {
+                debug!("[{}] <{}> User not previously in known user set, adding...", self.guild_id, voice_state.user_id);
+                silent_this_packet.insert(voice_state.user_id);
+                self.known_users.lock().await.insert(voice_state.user_id);
+            }
+
+            if let VoiceState::Speaking(samples) = voice_state.voice_state {
+                silent_this_packet.remove(&voice_state.user_id);
+                self.add_audio_data(voice_state.user_id, data.rx_timestamp, &samples).await;
+
+                if samples.len() != SAMPLES_PER_PACKET {
+                    warn!("[{}] <{}> We got a packet with a non-standard number of samples! Got: {}, expected: {SAMPLES_PER_PACKET})", self.guild_id, voice_state.user_id, samples.len());
+                }
+            }
+        }
+
+        for user in silent_this_packet.iter() {
+            self.add_audio_data(*user, data.rx_timestamp, SILENT_SAMPLES).await;
         }
     }
 
@@ -341,62 +360,28 @@ impl RecordingManager {
         info!("[{}] Stopping recording...", self.guild_id);
 
         for enc in &self.encoders {
-            if let Some(last_timestamp) = self.last_timestamps.get_mut(&enc.user_id) {
-                if let Some(delta) = Instant::now().checked_duration_since(*last_timestamp) {
-                    if let Some(extra) = delta.checked_sub(Duration::from_millis(20)) {
-                        debug!("[{}] <{}> Adding {}s of silence to the tail of the file...", self.guild_id, enc.user_id, extra.as_secs_f64());
-                        enc.add_silence(extra).await;
-                    }
-                }
-            }
-
             enc.finish().await;
         }
 
         self.encoders.clear();
-        self.last_timestamps.clear();
 
-        debug!("[{}] Encoders cleared.", self.guild_id);
+        // This clear prevents users from a previous recording who have left and not rejoined from being included in future recordings.
+        self.known_users.lock().await.clear();
+
+        debug!("[{}] Encoders and known users cleared.", self.guild_id);
     }
-}
 
-pub struct Recorder {
-    data: Arc<Mutex<RecordingManager>>,
-}
-
-impl Recorder {
-    pub fn new(guild_id: GuildId, mut voice_rx: mpsc::Receiver<VoiceData>) -> Self {
-        let data = Arc::new(Mutex::new(RecordingManager::new(
-            guild_id,
-            PathBuf::from("recordings"),
-        )));
-        
-        let data_cloned = data.clone();
-        
+    pub fn run (recorder: Arc<Mutex<Self>>, mut voice_rx: mpsc::Receiver<VoiceData>) {
         tokio::spawn(async move {
             while let Some(voice_data) = voice_rx.recv().await {
-                for voice_state in voice_data.user_voice_states {
-                    match voice_state.voice_state {
-                        VoiceState::Speaking(samples) => {
-                            data.lock().await.add_audio_data(voice_state.user_id, voice_state.timestamp, &samples).await;
-                        }
-                        VoiceState::Silent => {
-                            let samples = vec![0; SAMPLES_PER_PACKET as usize];
-                            data.lock().await.add_audio_data(voice_state.user_id, voice_state.timestamp, &samples).await;
-                        }
-                    }
-                }
+                recorder.lock().await.process_voice_data(voice_data).await;
             }
         });
-
-        Self { data: data_cloned }
     }
+}
 
-    pub async fn begin_recording(&mut self) {
-        self.data.lock().await.start().await;
-    }
-
-    pub async fn finish_recording(&mut self) {
-        self.data.lock().await.finish().await;
+impl Drop for Recorder {
+    fn drop(&mut self) {
+        debug!("[{}] Recorder dropped!", self.guild_id);
     }
 }

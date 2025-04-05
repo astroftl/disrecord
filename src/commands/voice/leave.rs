@@ -32,6 +32,9 @@ pub async fn run(ctx: &Context, cmd: &CommandInteraction) {
                 error!("Error responding to the interaction: {e:?}");
             });
         } else {
+            let data = ctx.data.read().await.get::<DiscordData>().unwrap().clone();
+            data.voice_commands.remove(&guild_id);
+
             let resp = CreateInteractionResponseMessage::new()
                 .content(format!("Left <#{channel_id}>"))
                 .ephemeral(true);

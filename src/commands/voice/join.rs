@@ -1,12 +1,13 @@
 use serenity::all::{ChannelId, ChannelType, CommandInteraction, CommandOptionType, Context, CreateCommandOption, GuildId, InteractionContext, UserId};
 use serenity::builder::{CreateCommand, CreateInteractionResponse, CreateInteractionResponseMessage};
 use songbird::CoreEvent;
+use tokio::sync::mpsc::{channel, Sender};
 use crate::discord::DiscordData;
-use crate::voice_handler::VoiceReceiver;
+use crate::voice_handler::{VoiceCommand, VoiceReceiver};
 
 pub const NAME: &str = "join";
 
-pub async fn do_join(ctx: &Context, guild_id: GuildId, channel_id: ChannelId) -> Result<(), ()> {
+pub async fn do_join(ctx: &Context, guild_id: GuildId, channel_id: ChannelId) -> Result<Sender<VoiceCommand>, ()> {
     debug!("Joining: {channel_id:?} @ {guild_id:?}");
 
     let manager = songbird::get(ctx)
@@ -16,23 +17,33 @@ pub async fn do_join(ctx: &Context, guild_id: GuildId, channel_id: ChannelId) ->
 
     // Some events relating to voice receive fire *while joining*.
     // We must make sure that any event handlers are installed before we attempt to join.
-    {
+    let cmd_tx = if manager.get(guild_id).is_none() {
         let call_lock = manager.get_or_insert(guild_id);
         let mut call = call_lock.lock().await;
 
-        let evt_receiver = VoiceReceiver::new(guild_id).await;
-        
-        let voice_command_tx = evt_receiver.inner.voice_commands.clone();
+        let (cmd_tx, cmd_rx) = channel(32);
         let data = ctx.data.read().await.get::<DiscordData>().unwrap().clone();
-        data.voice_commands.insert(guild_id, voice_command_tx);
+        data.voice_commands.insert(guild_id, cmd_tx.clone());
+        
+        let evt_receiver = VoiceReceiver::new(guild_id, cmd_rx).await;
 
         call.add_global_event(CoreEvent::SpeakingStateUpdate.into(), evt_receiver.clone());
         call.add_global_event(CoreEvent::ClientDisconnect.into(), evt_receiver.clone());
         call.add_global_event(CoreEvent::VoiceTick.into(), evt_receiver);
-    }
+
+        cmd_tx
+    } else {
+        let data = ctx.data.read().await.get::<DiscordData>().unwrap().clone();
+        if let Some(cmd_tx) = data.voice_commands.get(&guild_id) {
+            cmd_tx.clone()
+        } else {
+            error!("Failed to get command sender for existing call handler!");
+            return Err(());
+        }
+    };
 
     if let Ok(_) = manager.join(guild_id, channel_id).await {
-        Ok(())
+        Ok(cmd_tx)
     } else {
         // Although we failed to join, we need to clear out existing event handlers on the call.
         _ = manager.remove(guild_id).await;

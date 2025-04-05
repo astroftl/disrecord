@@ -5,11 +5,9 @@ use serenity::async_trait;
 use serenity::model::voice_gateway::payload::{ClientDisconnect, Speaking};
 use serenity::model::id::{UserId, GuildId};
 use songbird::{EventContext, EventHandler};
-use tokio::sync::mpsc::{channel, Sender};
+use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
 use crate::recorder::Recorder;
-
-pub const SAMPLES_PER_PACKET: u32 = 960;
 
 #[derive(Debug)]
 pub enum VoiceState {
@@ -20,12 +18,12 @@ pub enum VoiceState {
 #[derive(Debug)]
 pub struct UserVoiceState {
     pub user_id: UserId,
-    pub timestamp: Instant,
     pub voice_state: VoiceState,
 }
 
 #[derive(Debug)]
 pub struct VoiceData {
+    pub rx_timestamp: Instant,
     pub user_voice_states: Vec<UserVoiceState>,
 }
 
@@ -42,33 +40,31 @@ pub struct VoiceReceiver {
 pub struct InnerReceiver {
     known_ssrcs: DashMap<u32, UserId>,
     guild_id: GuildId,
-    recorder: Mutex<Recorder>,
+    recorder: Arc<Mutex<Recorder>>,
     voice_data: Sender<VoiceData>,
-    pub voice_commands: Sender<VoiceCommand>,
 }
 
 impl VoiceReceiver {
-    pub async fn new(guild_id: GuildId) -> Self {
-        let (cmd_tx, cmd_rx) = channel(32);
+    pub async fn new(guild_id: GuildId, mut cmd_rx: Receiver<VoiceCommand>) -> Self {
+
         let (voice_tx, voice_rx) = channel(50);
 
-        let recorder = Recorder::new(guild_id, voice_rx);
+        let recorder = Arc::new(Mutex::new(Recorder::new(guild_id)));
+        Recorder::run(recorder.clone(), voice_rx);
 
         let receiver = Self {
             inner: Arc::new(InnerReceiver {
                 known_ssrcs: DashMap::new(),
                 guild_id,
-                recorder: Mutex::new(recorder),
+                recorder,
                 voice_data: voice_tx,
-                voice_commands: cmd_tx,
             }),
         };
 
         let receiver_clone = receiver.clone();
 
         tokio::spawn(async move {
-            let mut rx = cmd_rx;
-            while let Some(command) = rx.recv().await {
+            while let Some(command) = cmd_rx.recv().await {
                 receiver_clone.handle_command(command).await;
             }
         });
@@ -79,14 +75,26 @@ impl VoiceReceiver {
     async fn handle_command(&self, command: VoiceCommand) {
         match command {
             VoiceCommand::Record => {
-                debug!("[{}] Sending START_RECORDING command", self.inner.guild_id);
-                self.inner.recorder.lock().await.begin_recording().await;
+                debug!("[{}] Got START_RECORDING command!", self.inner.guild_id);
+                self.inner.recorder.lock().await.start().await;
             }
             VoiceCommand::Finish => {
-                debug!("[{}] Sending STOP_RECORDING command", self.inner.guild_id);
-                self.inner.recorder.lock().await.finish_recording().await;
+                debug!("[{}] Got STOP_RECORDING command!", self.inner.guild_id);
+                self.inner.recorder.lock().await.finish().await;
             }
         }
+    }
+}
+
+impl Drop for VoiceReceiver {
+    fn drop(&mut self) {
+        debug!("[{}] VoiceReciver dropped!", self.inner.guild_id);
+    }
+}
+
+impl Drop for InnerReceiver {
+    fn drop(&mut self) {
+        debug!("[{}] InnerReceiver dropped!", self.guild_id);
     }
 }
 
@@ -106,29 +114,13 @@ impl EventHandler for VoiceReceiver {
                 }
             },
             Ctx::VoiceTick(tick) => {
-                let speaking = tick.speaking.len();
-                let total_participants = speaking + tick.silent.len();
-                
-                let timestamp = Instant::now();
-
-                // println!("Voice tick ({speaking}/{total_participants} live):");
-
-                let mut new_data = VoiceData { user_voice_states: vec![] };
+                let mut new_data = VoiceData { rx_timestamp: Instant::now(), user_voice_states: vec![] };
 
                 for (ssrc, data) in &tick.speaking {
                     if let Some(user_id) = self.inner.known_ssrcs.get(ssrc).as_deref().cloned() {
-                        let user_id_str = format!("{user_id:?}");
-
                         // This field should *always* exist under DecodeMode::Decode.
                         let decoded_voice = data.decoded_voice.as_ref().unwrap();
-                        // let voice_len = decoded_voice.len();
-                        // let audio_str = format!(
-                        //     "first samples from {}: {:?}",
-                        //     voice_len,
-                        //     &decoded_voice[..voice_len.min(5)]
-                        // );
-
-                        new_data.user_voice_states.push(UserVoiceState { timestamp, user_id, voice_state: VoiceState::Speaking(decoded_voice.to_owned()) });
+                        new_data.user_voice_states.push(UserVoiceState { user_id, voice_state: VoiceState::Speaking(decoded_voice.to_owned()) });
                     } else {
                         warn!("[{}] Got a voice packet with an SSRC not mapped to a user ID: {ssrc}", self.inner.guild_id)
                     }
@@ -136,11 +128,11 @@ impl EventHandler for VoiceReceiver {
 
                 for ssrc in &tick.silent {
                     if let Some(user_id) = self.inner.known_ssrcs.get(ssrc).as_deref().cloned() {
-                        new_data.user_voice_states.push(UserVoiceState { timestamp, user_id, voice_state: VoiceState::Silent});
-                    }// else {
-                    //     trace!("[{}] Got a silence packet with an SSRC not mapped to a user ID: {ssrc}", self.inner.guild_id)
-                    // }
+                        new_data.user_voice_states.push(UserVoiceState { user_id, voice_state: VoiceState::Silent});
+                    }
                 }
+
+                trace!("[{}] Sending VoiceData: {new_data:?}", self.inner.guild_id);
 
                 if let Err(e) = self.inner.voice_data.send(new_data).await {
                     error!("[{}] Failed to send VoiceData over channel: {e:?}", self.inner.guild_id);
