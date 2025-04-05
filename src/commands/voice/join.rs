@@ -8,7 +8,7 @@ use crate::voice_handler::{VoiceCommand, VoiceReceiver};
 pub const NAME: &str = "join";
 
 pub async fn do_join(ctx: &Context, guild_id: GuildId, channel_id: ChannelId) -> Result<Sender<VoiceCommand>, String> {
-    debug!("Joining: {channel_id:?} @ {guild_id:?}");
+    trace!("Joining: {channel_id} @ {guild_id}");
 
     let manager = songbird::get(ctx)
         .await
@@ -48,6 +48,7 @@ pub async fn do_join(ctx: &Context, guild_id: GuildId, channel_id: ChannelId) ->
 
         Err(format!("Failed to join voice channel: {e:?}"))
     } else {
+        info!("Joined channel {channel_id} of guild {guild_id}!");
         Ok(cmd_tx)
     }
 }

@@ -42,7 +42,7 @@ pub struct FlacEncoder {
 
 impl FlacEncoder {
     pub async fn new(user_id: UserId, guild_id: GuildId, channels: usize, bits_per_sample: usize, sample_rate: usize, file_path: PathBuf) -> Option<Self> {
-        debug!("[{guild_id}] <{user_id}> Initializing FlacEncoder...");
+        trace!("[{guild_id}] <{user_id}> Initializing FlacEncoder...");
         let buffer = CircularBuffer::<BUFFER_FRAMES, i16>::new();
         
         // Default encoder settings with reasonable compression level
@@ -85,7 +85,7 @@ impl FlacEncoder {
             }
         };
 
-        debug!("[{guild_id}] <{user_id}> Created new file: {:?}", file);
+        info!("[{guild_id}] <{user_id}> Created new file: {}", file_path.display());
         
         Some(Self {
             user_id,
@@ -102,7 +102,7 @@ impl FlacEncoder {
     
     // Initialize the FLAC file with appropriate headers
     pub async fn start(&self) {
-        debug!("[{}] <{}> Starting FLAC file...", self.guild_id, self.user_id);
+        trace!("[{}] <{}> Starting FLAC file...", self.guild_id, self.user_id);
 
         let stream = Stream::with_stream_info(self.stream_info.clone());
 
@@ -348,20 +348,18 @@ impl Recorder {
     }
 
     pub async fn start(&mut self) {
-        info!("[{}] Beginning recording...", self.guild_id);
+        if self.started.is_none() {
+            info!("[{}] Beginning recording...", self.guild_id);
 
-        self.started = Some(Instant::now());
-        self.output_dir = self.base_dir.join(format!("{}", self.guild_id)).join(format!("{}", chrono::Local::now().format("%Y_%m_%d_%H_%M_%S")));
+            self.started = Some(Instant::now());
+            self.output_dir = self.base_dir.join(format!("{}", self.guild_id)).join(format!("{}", chrono::Local::now().format("%Y_%m_%d_%H_%M_%S")));
+        }
     }
 
     pub async fn finish(&mut self) {
         self.started = None;
 
         info!("[{}] Stopping recording...", self.guild_id);
-
-        for enc in &self.encoders {
-            enc.finish().await;
-        }
 
         self.encoders.clear();
 
@@ -377,5 +375,11 @@ impl Recorder {
                 recorder.lock().await.process_voice_data(voice_data).await;
             }
         });
+    }
+}
+
+impl Drop for Recorder {
+    fn drop(&mut self) {
+        info!("[{}] Recorder is being Drop'd...", self.guild_id);
     }
 }

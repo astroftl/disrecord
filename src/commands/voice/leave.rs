@@ -49,6 +49,8 @@ pub async fn run(ctx: &Context, cmd: &CommandInteraction) {
             cmd.create_response(ctx, CreateInteractionResponse::Message(resp)).await.unwrap_or_else(|e| {
                 error!("Error responding to the interaction: {e:?}");
             });
+
+            info!("Left channel {channel_id} of guild {guild_id}!");
         }
     } else {
         let resp = CreateInteractionResponseMessage::new()
