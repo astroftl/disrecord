@@ -7,6 +7,7 @@ use serenity::model::id::{UserId, GuildId};
 use songbird::{EventContext, EventHandler};
 use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::Mutex;
+use crate::discord::RecordingMetadata;
 use crate::recorder::Recorder;
 
 #[derive(Debug)]
@@ -40,11 +41,11 @@ pub struct InnerReceiver {
 }
 
 impl VoiceReceiver {
-    pub async fn new(guild_id: GuildId) -> Self {
-
+    pub async fn new(metadata: RecordingMetadata) -> Self {
         let (voice_tx, voice_rx) = channel(50);
 
-        let recorder = Arc::new(Mutex::new(Recorder::new(guild_id)));
+        let guild_id = metadata.guild_id.clone();
+        let recorder = Arc::new(Mutex::new(Recorder::new(metadata)));
         Recorder::run(recorder.clone(), voice_rx);
 
         Self {

@@ -10,6 +10,7 @@ extern crate log;
 
 use std::env;
 use std::sync::Arc;
+use dashmap::DashMap;
 use fern::colors::{Color, ColoredLevelConfig};
 use log::LevelFilter;
 use serenity::all::ApplicationId;
@@ -17,7 +18,7 @@ use serenity::Client;
 use serenity::prelude::GatewayIntents;
 use songbird::{Config, SerenityInit};
 use songbird::driver::{Channels, DecodeMode};
-use crate::discord::DiscordData;
+use crate::discord::RecordingMetadata;
 
 #[tokio::main]
 async fn main() {
@@ -30,9 +31,6 @@ async fn main() {
 
     setup_logger();
 
-    let discord_data = DiscordData {
-    };
-
     let intents = GatewayIntents::non_privileged();
 
     let songbird_config = Config::default()
@@ -43,13 +41,13 @@ async fn main() {
         .event_handler(discord::Events)
         .application_id(app_id)
         .register_songbird_from_config(songbird_config)
-        .type_map_insert::<DiscordData>(Arc::new(discord_data))
+        .type_map_insert::<RecordingMetadata>(Arc::new(DashMap::new()))
         .await
         .expect("Error creating client");
 
     info!("Starting Disrecord...");
 
-    if let Err(why) = client.start().await {
+    if let Err(why) = client.start_autosharded().await {
         error!("Client error: {:?}", why);
     }
 

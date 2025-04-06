@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use circular_buffer::CircularBuffer;
 use dashmap::DashMap;
@@ -10,12 +10,13 @@ use serenity::all::{GuildId, UserId};
 use tokio::sync::{mpsc, Mutex};
 use crate::voice_handler::{VoiceData, VoiceState};
 use flacenc::bitsink::ByteSink;
-use tokio::fs::File;
+use tokio::fs::File as AsyncFile;
 use tokio::io::AsyncWriteExt;
 use flacenc::component::{BitRepr, Stream, StreamInfo};
 use flacenc::{encode_fixed_size_frame};
 use flacenc::config::Encoder;
 use serenity::futures::executor::block_on;
+use crate::discord::RecordingMetadata;
 
 const BLOCK_SIZE: usize = 4096;
 const BUFFER_N: usize = 2;
@@ -32,7 +33,7 @@ pub struct FlacEncoder {
     user_id: UserId,
     guild_id: GuildId,
     buffer: Mutex<CircularBuffer<BUFFER_FRAMES, i16>>,
-    file: Mutex<File>,
+    file: Mutex<AsyncFile>,
     channels: usize,
     bits_per_sample: usize,
     sample_rate: usize,
@@ -77,7 +78,7 @@ impl FlacEncoder {
         }
 
         // Open or create the file
-        let file = match File::create(&file_path).await {
+        let file = match AsyncFile::create(&file_path).await {
             Ok(x) => x,
             Err(e) => {
                 error!("[{guild_id}] <{user_id}> Failed to create new file {}: {e:?}", file_path.display());
@@ -247,23 +248,20 @@ pub struct Recorder {
     sample_rate: usize,
     channels: usize,
     bits_per_sample: usize,
-    known_users: Mutex<HashSet<UserId>>,
+    known_users: Arc<RwLock<HashSet<UserId>>>,
     started: Instant,
 }
 
 impl Recorder {
-    pub fn new(guild_id: GuildId) -> Self {
-        let base_dir= PathBuf::from("recordings");
-        let output_dir = base_dir.join(format!("{}", guild_id)).join(format!("{}", chrono::Local::now().format("%Y_%m_%d_%H_%M_%S")));
-
+    pub fn new(metadata: RecordingMetadata) -> Self {
         Self {
-            guild_id,
+            guild_id: metadata.guild_id,
             encoders: DashMap::new(),
-            output_dir,
+            output_dir: metadata.output_dir,
             sample_rate: SAMPLE_RATE,
             channels: CHANNELS,
             bits_per_sample: BITS_PER_SAMPLE,
-            known_users: Mutex::new(HashSet::new()),
+            known_users: metadata.known_users,
             started: Instant::now(),
         }
     }
@@ -309,13 +307,13 @@ impl Recorder {
     }
 
     pub async fn process_voice_data(&self, data: VoiceData) {
-        let mut silent_this_packet = self.known_users.lock().await.clone();
+        let mut silent_this_packet = self.known_users.read().unwrap().clone();
 
         for voice_state in data.user_voice_states {
             if !silent_this_packet.contains(&voice_state.user_id) {
                 debug!("[{}] <{}> User not previously in known user set, adding...", self.guild_id, voice_state.user_id);
                 silent_this_packet.insert(voice_state.user_id);
-                self.known_users.lock().await.insert(voice_state.user_id);
+                self.known_users.write().unwrap().insert(voice_state.user_id);
             }
 
             if let VoiceState::Speaking(samples) = voice_state.voice_state {
@@ -344,6 +342,8 @@ impl Recorder {
 
 impl Drop for Recorder {
     fn drop(&mut self) {
-        info!("[{}] Recorder is being Drop'd...", self.guild_id);
+        trace!("[{}] Recorder is being Drop'd...", self.guild_id);
+        self.encoders.clear();
+        info!("[{}] Recorder Drop'd!", self.guild_id);
     }
 }

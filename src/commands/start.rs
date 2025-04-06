@@ -1,6 +1,11 @@
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
+use chrono::Utc;
 use serenity::all::{ActivityData, ChannelId, ChannelType, CommandInteraction, CommandOptionType, Context, CreateCommandOption, CreateInteractionResponseMessage, GuildId, InteractionContext, OnlineStatus, UserId};
 use serenity::builder::{CreateCommand, CreateInteractionResponse};
 use songbird::CoreEvent;
+use crate::discord::RecordingMetadata;
 use crate::voice_handler::VoiceReceiver;
 
 pub const NAME: &str = "start";
@@ -16,10 +21,29 @@ pub async fn do_join(ctx: &Context, guild_id: GuildId, channel_id: ChannelId) ->
     // Some events relating to voice receive fire *while joining*.
     // We must make sure that any event handlers are installed before we attempt to join.
     if manager.get(guild_id).is_none() {
+        let started = Utc::now();
+        let base_dir= PathBuf::from("recordings");
+        let output_dir_name = started.format("%Y_%m_%d_%H_%M_%S").to_string();
+        let output_dir = base_dir.join(format!("{}", guild_id)).join(output_dir_name.as_str());
+
+        let metadata_entry = RecordingMetadata {
+            started,
+            guild_id,
+            output_dir: output_dir.clone(),
+            output_dir_name,
+            known_users: Arc::new(RwLock::new(HashSet::new())),
+        };
+
+        {
+            let data = ctx.data.read().await;
+            let metadata = data.get::<RecordingMetadata>().unwrap();
+            metadata.insert(guild_id, metadata_entry.clone());
+        }
+
         let call_lock = manager.get_or_insert(guild_id);
         let mut call = call_lock.lock().await;
 
-        let evt_receiver = VoiceReceiver::new(guild_id).await;
+        let evt_receiver = VoiceReceiver::new(metadata_entry).await;
 
         call.add_global_event(CoreEvent::SpeakingStateUpdate.into(), evt_receiver.clone());
         call.add_global_event(CoreEvent::ClientDisconnect.into(), evt_receiver.clone());
@@ -81,8 +105,7 @@ async fn handle_join_and_record_with_response(ctx: &Context, cmd: &CommandIntera
     match do_join(ctx, guild_id, channel_id).await {
         Ok(_) => {
             let resp = CreateInteractionResponseMessage::new()
-                .content(format!("Joined <#{channel_id}> and began recording!"))
-                .ephemeral(true);
+                .content(format!("🔴 Joined <#{channel_id}> and began recording!"));
 
             cmd.create_response(ctx, CreateInteractionResponse::Message(resp)).await.unwrap_or_else(|e| {
                 error!("Error responding to the interaction: {e:?}");
