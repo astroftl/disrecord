@@ -84,6 +84,19 @@ fn setup_logger() {
         LevelFilter::Trace
     };
 
+    let log_level_all = if let Ok(level) = env::var("LOG_LEVEL_ALL") {
+        match level.as_str() {
+            "error" => LevelFilter::Error,
+            "warn" => LevelFilter::Warn,
+            "info" => LevelFilter::Info,
+            "debug" => LevelFilter::Debug,
+            "trace" => LevelFilter::Trace,
+            _ => panic!("Unknown log level: {}", level),
+        }
+    } else {
+        LevelFilter::Warn
+    };
+
     let mut dispatch = fern::Dispatch::new()
         .format(move |out, message, record| {
             out.finish(format_args!(
@@ -98,7 +111,7 @@ fn setup_logger() {
                 message = message,
             ));
         })
-        .level(LevelFilter::Warn)
+        .level(log_level_all)
         .level_for("disrecord", log_level)
         .chain(std::io::stdout());
 
