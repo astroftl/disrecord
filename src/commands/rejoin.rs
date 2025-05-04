@@ -36,6 +36,8 @@ pub async fn do_rejoin(ctx: &Context, guild_id: GuildId, channel_id: ChannelId) 
             sleep(Duration::from_millis(500)).await;
         }
 
+        // TODO: Check that channel is in the guild and that the bot has access to it before joining.
+
         if let Err(e) = manager.join(guild_id, channel_id).await {
             error!("Failed to join voice channel: {e:?}");
 

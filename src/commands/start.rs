@@ -140,6 +140,8 @@ pub async fn run(ctx: &Context, cmd: &CommandInteraction) {
             get_member_channel(ctx, guild_id, cmd.user.id).await
         }
     };
+    
+    // TODO: Check that channel is in the guild and that the bot has access to it before joining.
 
     let has_call = manager.get(guild_id).is_some();
 
