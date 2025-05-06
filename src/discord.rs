@@ -1,28 +1,16 @@
-use std::collections::HashSet;
-use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
-use chrono::{DateTime, Utc};
-use dashmap::DashMap;
+use crate::commands;
+use crate::recorder::record_manager::RecordManager;
+use serenity::all::{Command, Interaction};
+use serenity::prelude::TypeMapKey;
 use serenity::{
     async_trait,
     client::{Context, EventHandler},
     model::gateway::Ready,
 };
-use serenity::all::{Command, GuildId, Interaction, UserId};
-use serenity::prelude::TypeMapKey;
-use crate::commands;
+use std::sync::Arc;
 
-#[derive(Clone)]
-pub struct RecordingMetadata {
-    pub started: DateTime<Utc>,
-    pub guild_id: GuildId,
-    pub output_dir: PathBuf,
-    pub output_dir_name: String,
-    pub known_users: Arc<RwLock<HashSet<UserId>>>,
-}
-
-impl TypeMapKey for RecordingMetadata {
-    type Value = Arc<DashMap<GuildId, RecordingMetadata>>;
+impl TypeMapKey for RecordManager {
+    type Value = Arc<RecordManager>;
 }
 
 pub struct Events;

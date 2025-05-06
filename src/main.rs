@@ -1,55 +1,89 @@
 #![feature(duration_millis_float)]
 
-mod discord;
-mod commands;
-mod voice_handler;
-mod recorder;
-
 #[macro_use]
 extern crate log;
+mod discord;
+mod commands;
+mod recorder;
+mod parser;
 
-use std::env;
-use std::sync::Arc;
-use dashmap::DashMap;
+use crate::recorder::RecordConfig;
+use clap::Parser;
 use fern::colors::{Color, ColoredLevelConfig};
 use log::LevelFilter;
+use recorder::record_manager::RecordManager;
 use serenity::all::ApplicationId;
-use serenity::Client;
 use serenity::prelude::GatewayIntents;
+use serenity::Client;
+use songbird::driver::DecodeMode;
 use songbird::{Config, SerenityInit};
-use songbird::driver::{Channels, DecodeMode};
-use crate::discord::RecordingMetadata;
+use std::env;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+///
+#[derive(Parser, Debug)]
+struct Args {
+    /// Path to file or directory to post-process
+    #[arg(short, long)]
+    parse: Option<PathBuf>,
+}
+
+fn main() {
+    dotenv::dotenv().ok();
+    setup_logger();
+
+    let args = Args::parse();
+
+    match args.parse {
+        None => {
+            bot()
+        }
+        Some(path) => {
+            parse(path)
+        }
+    }
+}
 
 #[tokio::main]
-async fn main() {
-    dotenv::dotenv().ok();
-
+async fn bot() {
     let bot_token = env::var("BOT_TOKEN").expect("Expected a BOT_TOKEN in the environment");
 
     let app_id: ApplicationId = env::var("APP_ID").expect("Expected an APP_ID in the environment")
         .parse().expect("APP_ID is not a valid ID");
 
-    setup_logger();
-
     let intents = GatewayIntents::non_privileged();
 
     let songbird_config = Config::default()
-        .decode_channels(Channels::Mono)
-        .decode_mode(DecodeMode::Decode);
+        .decode_mode(DecodeMode::Decrypt);
+
+    let record_config = RecordConfig {
+        base_dir: PathBuf::from("recordings"),
+        subdir_fmt: "%Y_%m_%d_%H_%M_%S".to_string(),
+    };
 
     let mut client = Client::builder(&bot_token, intents)
         .event_handler(discord::Events)
         .application_id(app_id)
         .register_songbird_from_config(songbird_config)
-        .type_map_insert::<RecordingMetadata>(Arc::new(DashMap::new()))
+        .type_map_insert::<RecordManager>(Arc::new(RecordManager::new(record_config)))
         .await
-        .expect("Error creating client");
+        .expect("Error creating client!");
 
     info!("Starting Disrecord...");
 
     if let Err(why) = client.start_autosharded().await {
         error!("Client error: {:?}", why);
     }
+
+    info!("Goodbye!")
+}
+
+#[tokio::main]
+async fn parse(path: PathBuf) {
+    info!("Parsing Disrecord output: {}", path.display());
+
+    parser::parse(path).await;
 
     info!("Goodbye!")
 }
