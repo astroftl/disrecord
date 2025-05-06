@@ -8,9 +8,8 @@ log = { version = "0", features = ["release_max_level_debug"] }
 chrono = "0"
 fern = { version = "0", features = ["colored"] }
 dotenv = "0"
-clap = { version = "4", default-features = true, features = ["derive", "env"] }
+rand = "0.9"
 tokio = { version = "1", features = ["full"] }
 serenity = { version = "0", default-features = false, features = ["full"] }
 songbird = {  version = "0", default-features = true, features = ["receive"], path = "../songbird" }
 dashmap = "6"
-rkyv = "0.8"

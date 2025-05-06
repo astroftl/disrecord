@@ -1,5 +1,5 @@
 use crate::commands;
-use crate::recorder::record_manager::RecordManager;
+use crate::recorder::recorder::Recorder;
 use serenity::all::{Command, Interaction};
 use serenity::prelude::TypeMapKey;
 use serenity::{
@@ -9,8 +9,8 @@ use serenity::{
 };
 use std::sync::Arc;
 
-impl TypeMapKey for RecordManager {
-    type Value = Arc<RecordManager>;
+impl TypeMapKey for Recorder {
+    type Value = Arc<Recorder>;
 }
 
 pub struct Events;

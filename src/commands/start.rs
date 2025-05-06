@@ -1,12 +1,12 @@
 use crate::commands::{get_channel_or_default_current, reset_presence, set_presence};
-use crate::recorder::record_manager::RecordManager;
+use crate::recorder::recorder::Recorder;
 use serenity::all::{ChannelId, ChannelType, CommandInteraction, CommandOptionType, Context, CreateCommandOption, CreateInteractionResponseMessage, GuildId, InteractionContext};
 use serenity::builder::{CreateCommand, CreateInteractionResponse};
 
 pub const NAME: &str = "start";
 
 async fn handle_join_and_record_with_response(ctx: &Context, cmd: &CommandInteraction, guild_id: GuildId, channel_id: ChannelId) {
-    let rec_man = RecordManager::get(ctx).await.expect("RecordManager doesn't exist!");
+    let rec_man = Recorder::get(ctx).await.expect("RecordManager doesn't exist!");
 
     match rec_man.join(ctx, guild_id, channel_id).await {
         Ok(_) => {
@@ -39,7 +39,7 @@ pub async fn run(ctx: &Context, cmd: &CommandInteraction) {
     
     // TODO: Check that channel is in the guild and that the bot has access to it before joining.
 
-    let has_call = RecordManager::has_call(ctx, guild_id).await;
+    let has_call = Recorder::has_call(ctx, guild_id).await;
 
     if has_call {
         let resp = CreateInteractionResponseMessage::new()

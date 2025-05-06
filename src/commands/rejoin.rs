@@ -1,5 +1,5 @@
 use crate::commands::get_channel_or_default_current;
-use crate::recorder::record_manager::RecordManager;
+use crate::recorder::recorder::Recorder;
 use serenity::all::{ChannelType, CommandInteraction, CommandOptionType, Context, CreateCommandOption, InteractionContext};
 use serenity::builder::{CreateCommand, CreateInteractionResponse, CreateInteractionResponseMessage};
 
@@ -10,7 +10,7 @@ pub async fn run(ctx: &Context, cmd: &CommandInteraction) {
     let channel_id = get_channel_or_default_current(ctx, cmd).await;
 
     if let Some(channel_id) = channel_id {
-        let rec_man = RecordManager::get(ctx).await.expect("RecordManager doesn't exist!");
+        let rec_man = Recorder::get(ctx).await.expect("RecordManager doesn't exist!");
 
         match rec_man.rejoin(ctx, guild_id, channel_id).await {
             Ok(_) => {

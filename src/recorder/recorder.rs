@@ -1,24 +1,29 @@
 use crate::recorder::voice_receiver::VoiceReceiver;
-use crate::recorder::{RecordConfig, RecordingMetadata, RecordingSummary};
-use chrono::Utc;
-use dashmap::DashMap;
+use crate::recorder::{RecorderConfig, RecordingSummary};
 use serenity::all::{ChannelId, Context, GuildId};
 use songbird::CoreEvent;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::mpsc;
 use tokio::time::sleep;
+use crate::recorder::writer::{RtpUpdate, Writer};
 
 #[derive(Debug)]
-pub struct RecordManager {
-    config: RecordConfig,
-    voice_handlers: DashMap<GuildId, VoiceReceiver>,
+pub struct Recorder {
+    writer: Arc<Writer>,
+    rtp_tx: mpsc::Sender<RtpUpdate>
 }
 
-impl RecordManager {
-    pub fn new(config: RecordConfig) -> Self {
+impl Recorder {
+    pub fn new(config: RecorderConfig) -> Self {
+        let (rtp_tx, rtp_rx) = mpsc::channel(1024);
+
+        let writer = Arc::new(Writer::new(config));
+        Writer::run(writer.clone(), rtp_rx);
+
         Self {
-            config,
-            voice_handlers: DashMap::new(),
+            writer,
+            rtp_tx,
         }
     }
 
@@ -40,27 +45,13 @@ impl RecordManager {
         // Some events relating to voice receive fire *while joining*.
         // We must make sure that any event handlers are installed before we attempt to join.
         if sbird.get(guild_id).is_none() {
-            let started = Utc::now();
-            let output_dir_name = started.format(self.config.subdir_fmt.as_str()).to_string();
-            let output_dir = self.config.base_dir.join(format!("{}", guild_id)).join(output_dir_name.as_str());
-
             let call_lock = sbird.get_or_insert(guild_id);
             let mut call = call_lock.lock().await;
 
-            let rec_metadata = RecordingMetadata {
-                guild_id,
-                output_dir,
-                started,
-            };
-
-            let voice_receiver = VoiceReceiver::new(rec_metadata).await;
+            let voice_receiver = VoiceReceiver::new(guild_id, self.rtp_tx.clone()).await;
 
             call.add_global_event(CoreEvent::RtpPacket.into(), voice_receiver.clone());
-            call.add_global_event(CoreEvent::RtcpPacket.into(), voice_receiver.clone());
-            call.add_global_event(CoreEvent::ClientDisconnect.into(), voice_receiver.clone());
-            call.add_global_event(CoreEvent::SpeakingStateUpdate.into(), voice_receiver.clone());
-
-            self.voice_handlers.insert(guild_id, voice_receiver);
+            call.add_global_event(CoreEvent::SpeakingStateUpdate.into(), voice_receiver);
         }
 
         // TODO: Check that channel is in the guild and that the bot has access to it before joining.
@@ -70,11 +61,13 @@ impl RecordManager {
 
             // Although we failed to join, we need to clear out existing event handlers on the call.
             _ = sbird.remove(guild_id).await;
-            self.voice_handlers.remove(&guild_id);
 
             Err(format!("Failed to join voice channel: {e}"))
         } else {
             info!("[{guild_id}] Joined channel {channel_id} and began recording!");
+
+            self.writer.start(guild_id);
+
             Ok(())
         }
     }
@@ -96,7 +89,6 @@ impl RecordManager {
 
                     // Although we failed to join, we need to clear out existing event handlers on the call.
                     _ = sbird.remove(guild_id).await;
-                    self.voice_handlers.remove(&guild_id);
 
                     return Err(format!("Failed to leave voice channel: {e}"))
                 };
@@ -111,7 +103,6 @@ impl RecordManager {
 
                 // Although we failed to join, we need to clear out existing event handlers on the call.
                 _ = sbird.remove(guild_id).await;
-                self.voice_handlers.remove(&guild_id);
 
                 Err(format!("Failed to join voice channel: {e}"))
             } else {
@@ -139,21 +130,30 @@ impl RecordManager {
                 error!("[{guild_id}] Failed to leave channel: {e:?}");
                 Err(format!("Failed to leave channel: {e}"))
             } else {
-                match self.voice_handlers.remove(&guild_id) {
-                    None => {
-                        error!("[{guild_id}] Error retrieving recording state!");
-                        Err("Error retrieving recording state!".to_string())
-                    }
-                    Some((_, voice_handler)) => {
-                        // TODO: Finalize recording in VoiceReceiver.
-                        info!("[{guild_id}] Left channel {channel_id} and finalized recording!");
+                // TODO: Finalize recording in VoiceReceiver.
+                info!("[{guild_id}] Left channel {channel_id} and finalized recording!");
 
-                        Ok(voice_handler.get_summary())
-                    }
-                }
+                self.writer.finish(guild_id).await;
+
+                // TODO: Remove
+
+                let rec = RecordingSummary {
+                    guild_id,
+                    output_dir: Default::default(),
+                    started: Default::default(),
+                    known_users: Default::default(),
+                };
+
+                Ok(rec)
             }
         } else {
             Err("Not in a voice channel!".to_string())
         }
+    }
+}
+
+impl Drop for Recorder {
+    fn drop(&mut self) {
+        trace!("Recorder::drop");
     }
 }

@@ -1,4 +1,4 @@
-use crate::recorder::record_manager::RecordManager;
+use crate::recorder::recorder::Recorder;
 use chrono::Utc;
 use serenity::all::{CommandInteraction, Context, CreateEmbed, CreateEmbedFooter, CreateInteractionResponseMessage, EditInteractionResponse, InteractionContext};
 use serenity::builder::{CreateCommand, CreateInteractionResponse};
@@ -12,7 +12,7 @@ pub async fn run(ctx: &Context, cmd: &CommandInteraction) {
         error!("Error responding to the interaction: {e:?}");
     });
 
-    let rec_man = RecordManager::get(ctx).await.expect("RecordManager doesn't exist!");
+    let rec_man = Recorder::get(ctx).await.expect("RecordManager doesn't exist!");
 
     match rec_man.finish(ctx, guild_id).await {
         Ok(metadata) => {

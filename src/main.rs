@@ -2,16 +2,15 @@
 
 #[macro_use]
 extern crate log;
+
 mod discord;
 mod commands;
 mod recorder;
-mod parser;
 
-use crate::recorder::RecordConfig;
-use clap::Parser;
+use crate::recorder::RecorderConfig;
 use fern::colors::{Color, ColoredLevelConfig};
 use log::LevelFilter;
-use recorder::record_manager::RecordManager;
+use recorder::recorder::Recorder;
 use serenity::all::ApplicationId;
 use serenity::prelude::GatewayIntents;
 use serenity::Client;
@@ -21,28 +20,11 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-///
-#[derive(Parser, Debug)]
-struct Args {
-    /// Path to file or directory to post-process
-    #[arg(short, long)]
-    parse: Option<PathBuf>,
-}
-
 fn main() {
     dotenv::dotenv().ok();
     setup_logger();
 
-    let args = Args::parse();
-
-    match args.parse {
-        None => {
-            bot()
-        }
-        Some(path) => {
-            parse(path)
-        }
-    }
+    bot()
 }
 
 #[tokio::main]
@@ -57,16 +39,18 @@ async fn bot() {
     let songbird_config = Config::default()
         .decode_mode(DecodeMode::Decrypt);
 
-    let record_config = RecordConfig {
+    let record_config = RecorderConfig {
         base_dir: PathBuf::from("recordings"),
         subdir_fmt: "%Y_%m_%d_%H_%M_%S".to_string(),
     };
+
+    let recorder = Arc::new(Recorder::new(record_config));
 
     let mut client = Client::builder(&bot_token, intents)
         .event_handler(discord::Events)
         .application_id(app_id)
         .register_songbird_from_config(songbird_config)
-        .type_map_insert::<RecordManager>(Arc::new(RecordManager::new(record_config)))
+        .type_map_insert::<Recorder>(recorder)
         .await
         .expect("Error creating client!");
 
@@ -75,15 +59,6 @@ async fn bot() {
     if let Err(why) = client.start_autosharded().await {
         error!("Client error: {:?}", why);
     }
-
-    info!("Goodbye!")
-}
-
-#[tokio::main]
-async fn parse(path: PathBuf) {
-    info!("Parsing Disrecord output: {}", path.display());
-
-    parser::parse(path).await;
 
     info!("Goodbye!")
 }
