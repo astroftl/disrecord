@@ -4,13 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-log = { version = "0", features = ["release_max_level_debug"] }
-chrono = "0"
-fern = { version = "0", features = ["colored"] }
-dotenv = "0"
+log = { version = "0.4", features = ["release_max_level_debug"] }
+chrono = "0.4"
+fern = { version = "0.7", features = ["colored"] }
+dotenv = "0.15"
 rand = "0.9"
-tokio = { version = "1", features = ["full"] }
-serenity = { version = "0", default-features = false, features = ["full"] }
-songbird = {  version = "0", default-features = true, features = ["receive"], path = "../songbird" }
-dashmap = "6"
-async_zip = { version = "0", features = ["full"]}
+tokio = { version = "1.45", features = ["full"] }
+serenity = { version = "0.12", default-features = false, features = ["full"] }
+songbird = {  version = "0.5", default-features = true, features = ["receive"], path = "../songbird" }
+dashmap = "6.1"
+async_zip = { version = "0.0", features = ["full"]}
