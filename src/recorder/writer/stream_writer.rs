@@ -3,57 +3,49 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use rand::Rng;
 use serenity::all::{GuildId, UserId};
-use songbird::packet::wrap::Wrap32;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex as AsyncMutex;
-use crate::recorder::writer::muxer::ogg::{OggHeader, MAX_PACKETS_PER_PAGE};
+use crate::recorder::writer::muxer::ogg::{OggHeader, OggSegments, MAX_SEGMENTS_PER_FRAME};
 use crate::recorder::writer::muxer::ogg_opus::{CommentHeader, IdHeader, MappingFamily, PRESKIP_DEFAULT};
-use crate::recorder::writer::muxer::opus_toc::{Bandwidth, FrameSize, OpusToc};
-use crate::recorder::writer::RtpUpdate;
+use crate::recorder::writer::muxer::opus_toc::{Bandwidth, OpusToc};
 
-const DUMP_PACKETS: usize = 200;
-const DUMP_LENGTH: usize = 50_000;
-
+const DISCORD_BANDWIDTH: Bandwidth = Bandwidth::Fullband;
 const SILENCE_PACKET: [u8; 3] = [0xF8, 0xFF, 0xFE];
+const SILENCE_TOC: OpusToc = OpusToc::from(SILENCE_PACKET[0]);
+const MAX_SAMPLES_PER_PAGE: usize = 200_000;
 
 #[derive(Debug)]
 pub struct PacketBuffer {
     pub opus: Vec<u8>,
-    pub lengths: Vec<u16>,
     pub tocs: Vec<OpusToc>,
-    pub total_length: usize,
-    pub first_timestamp: Option<Wrap32>,
-    pub last_timestamp: Option<Wrap32>,
+    pub segments: OggSegments,
+    pub total_samples: usize,
 }
 
 impl PacketBuffer {
     pub fn new() -> Self {
         Self {
-            opus: vec![],
-            lengths: vec![],
-            tocs: vec![],
-            total_length: 0,
-            first_timestamp: None,
-            last_timestamp: None,
+            opus: Vec::new(),
+            tocs: Vec::new(),
+            segments: OggSegments::new(),
+            total_samples: 0,
         }
     }
 
     pub fn clear(&mut self) {
         self.opus.clear();
-        self.lengths.clear();
         self.tocs.clear();
-        self.total_length = 0;
-        self.first_timestamp = None;
-        self.last_timestamp = None;
+        self.segments.clear();
+        self.total_samples = 0;
     }
 }
 
 #[derive(Debug)]
 pub struct OpusState {
     sequence: u32,
-    recording_first_timestamp: Wrap32,
-    bandwidth: Bandwidth,
+    granule: u64,
+    tick_count: usize,
     started: bool,
     packet_buffer: PacketBuffer,
 }
@@ -69,7 +61,8 @@ pub struct StreamWriter {
 }
 
 impl StreamWriter {
-    pub async fn new(guild_id: GuildId, user_id: UserId, output_dir: PathBuf) -> Option<Self> {
+    // TODO: Pass in a TOC so we can move away from assuming constant Discord bandwidths?
+    pub async fn new(guild_id: GuildId, user_id: UserId, user_name: Option<String>, output_dir: PathBuf) -> Option<Self> {
         let rand_serial = rand::rng().random::<u32>();
 
         if let Err(e) = tokio::fs::create_dir_all(output_dir.clone()).await {
@@ -77,28 +70,35 @@ impl StreamWriter {
             return None;
         }
 
-        let file_path = output_dir.join(user_id.to_string() + ".opus");
+        let file_path = match user_name {
+            None => output_dir.join(user_id.to_string() + ".opus"),
+            Some(name) => output_dir.join(name + ".opus"),
+        };
 
-        debug!("[{guild_id}] <{user_id}> Creating output file: {}", file_path.display());
+        trace!("[{guild_id}] <{user_id}> Creating output file: {}", file_path.display());
 
         match File::create(&file_path).await {
             Ok(file) => {
                 let state = OpusState {
                     sequence: 0,
-                    recording_first_timestamp: Wrap32::new(0),
-                    bandwidth: Bandwidth::Fullband,
+                    granule: 0,
+                    tick_count: 0,
                     started: false,
                     packet_buffer: PacketBuffer::new(),
                 };
 
-                Some(Self {
+                let stream = Self {
                     guild_id,
                     user_id,
                     serial: rand_serial,
                     state: Mutex::new(state),
                     file:  AsyncMutex::new(file),
                     file_path,
-                })
+                };
+
+                stream.start().await;
+
+                Some(stream)
             }
             Err(e) => {
                 error!("[{guild_id}] <{user_id}> Failed to create new file {}: {e:?}", file_path.display());
@@ -107,13 +107,13 @@ impl StreamWriter {
         }
     }
 
-    pub async fn start(&self, bandwidth: Bandwidth, first_timestamp: Wrap32) {
+    pub async fn start(&self) {
         debug!("[{}] <{}> Starting file: {}", self.guild_id, self.user_id, self.file_path.display());
 
         let opus_id_header = IdHeader {
             channel_count: 2,
             preskip: PRESKIP_DEFAULT,
-            input_sample_rate: bandwidth.sample_rate(),
+            input_sample_rate: DISCORD_BANDWIDTH.sample_rate(),
             gain: 0,
             mapping_family: MappingFamily::Rtp,
         };
@@ -127,12 +127,14 @@ impl StreamWriter {
             granule: 0,
             serial: self.serial,
             sequence: 0,
-            segment_lengths: vec![opus_id_data.len() as u16],
         };
 
-        debug!("[{}] <{}> ID page header: {id_page_header:?}", self.guild_id, self.user_id);
+        let mut id_page_segments = OggSegments::new();
+        id_page_segments.push_packet(opus_id_data.len());
 
-        let id_page = match id_page_header.build_page(opus_id_data.as_slice()) {
+        trace!("[{}] <{}> ID page header: {id_page_header:?}", self.guild_id, self.user_id);
+
+        let id_page = match id_page_header.build_page(&id_page_segments, opus_id_data.as_slice()) {
             Some(x) => x,
             None => {
                 error!("[{}] <{}> Failed to build Opus ID page!", self.guild_id, self.user_id);
@@ -159,12 +161,14 @@ impl StreamWriter {
             granule: 0,
             serial: self.serial,
             sequence: 1,
-            segment_lengths: vec![opus_comment_data.len() as u16],
         };
 
-        debug!("[{}] <{}> Comment page header: {comment_page_header:?}", self.guild_id, self.user_id);
+        let mut comment_page_segments =  OggSegments::new();
+        comment_page_segments.push_packet(opus_comment_data.len());
 
-        let comment_page = match comment_page_header.build_page(opus_comment_data.as_slice()) {
+        trace!("[{}] <{}> Comment page header: {comment_page_header:?}", self.guild_id, self.user_id);
+
+        let comment_page = match comment_page_header.build_page(&comment_page_segments, opus_comment_data.as_slice()) {
             Some(x) => x,
             None => {
                 error!("[{}] <{}> Failed to build Opus ID page!", self.guild_id, self.user_id);
@@ -181,39 +185,26 @@ impl StreamWriter {
             let mut state = self.state.lock().unwrap();
             state.started = true;
             state.sequence = 2;
-            state.recording_first_timestamp = first_timestamp;
-            state.bandwidth = bandwidth;
         }
     }
 
-    async fn fill_silence(&self, samples: usize, mut last_granule: u32) {
-        let bandwidth = self.state.lock().unwrap().bandwidth;
-        let mut sequence = self.state.lock().unwrap().sequence;
+    pub async fn fill_silence(&self, ticks: usize) {
+        let (mut sequence, mut last_granule) = {
+            let state = self.state.lock().unwrap();
+            (state.sequence, state.granule)
+        };
 
-        let silence_toc = OpusToc::from(SILENCE_PACKET[0]);
-        let ms20_divider = FrameSize::Ms20.samples(bandwidth);
-
-        let mut samples_left = samples;
-
-        let ms20_packets = samples_left / ms20_divider;
-        samples_left = samples_left % ms20_divider;
-
-        trace!("[{}] <{}> Filling gaps with silence packets: [20ms * {ms20_packets}]", self.guild_id, self.user_id);
-        if samples_left != 0 {
-            warn!("[{}] <{}> We have leftover samples: {samples_left}", self.guild_id, self.user_id);
-        }
-
-        let mut packets_left = ms20_packets;
+        let mut packets_left = ticks;
 
         while packets_left > 0 {
-            let page_packets = min(packets_left, MAX_PACKETS_PER_PAGE);
+            let page_packets = min(packets_left, MAX_SEGMENTS_PER_FRAME);
 
             let mut opus_data: Vec<u8> = Vec::new();
-            let mut segment_lengths: Vec<u16> = Vec::new();
+            let mut opus_segments = OggSegments::new();
             for _ in 0..page_packets {
                 opus_data.extend_from_slice(&SILENCE_PACKET);
-                segment_lengths.push(SILENCE_PACKET.len() as u16);
-                last_granule += silence_toc.sample_count() as u32;
+                opus_segments.push_packet(SILENCE_PACKET.len());
+                last_granule += SILENCE_TOC.sample_count() as u64;
             }
 
             let page_header = OggHeader {
@@ -223,13 +214,12 @@ impl StreamWriter {
                 granule: last_granule as u64,
                 serial: self.serial,
                 sequence,
-                segment_lengths,
             };
 
             packets_left -= page_packets;
             sequence += 1;
 
-            let page_data = page_header.build_page(opus_data.as_slice()).unwrap();
+            let page_data = page_header.build_page(&opus_segments, opus_data.as_slice()).unwrap();
 
             {
                 let mut file =  self.file.lock().await;
@@ -239,53 +229,27 @@ impl StreamWriter {
     }
 
     async fn dump(&self, finalize: bool) {
-        let started = self.state.lock().unwrap().started;
-        if !started {
-            let (bandwidth, first_timestamp) = {
-                let state = self.state.lock().unwrap();
-                let packet_buffer = &state.packet_buffer;
-
-                let bandwidth = match packet_buffer.tocs.first() {
-                    None => Bandwidth::Fullband,
-                    Some(toc) => toc.bandwidth,
-                };
-
-                (bandwidth, packet_buffer.first_timestamp.unwrap())
-            };
-
-            self.start(bandwidth, first_timestamp).await;
-        }
-
         let page_data = {
             let mut state = self.state.lock().unwrap();
 
-            let (sample_rate, sample_count) = match state.packet_buffer.tocs.last() {
-                None => (0, 0),
-                Some(x) => (x.bandwidth.sample_rate(), x.sample_count())
-            };
+            let granule = state.granule + state.packet_buffer.total_samples as u64;
 
-            let granule = match state.packet_buffer.last_timestamp {
-                None => 0,
-                Some(last_timestamp) => {
-                    (last_timestamp - state.recording_first_timestamp.into()).0.0 + sample_count as u32
-                }
-            };
-
-            trace!("[{}] <{}> Dumping Ogg page... (granule: {granule}, seek time: {})", self.guild_id, self.user_id, granule as f32 / sample_rate as f32);
+            trace!("[{}] <{}> Dumping Ogg page... (granule: {granule})", self.guild_id, self.user_id);
 
             let page_header = OggHeader {
                 continuation: false,
                 begin_stream: false,
                 end_stream: finalize,
-                granule: granule as u64,
+                granule,
                 serial: self.serial,
                 sequence: state.sequence,
-                segment_lengths: state.packet_buffer.lengths.clone(),
             };
 
-            let page_data = page_header.build_page(state.packet_buffer.opus.as_slice()).unwrap();
+            let page_data = page_header.build_page(&state.packet_buffer.segments, state.packet_buffer.opus.as_slice()).unwrap();
 
             state.packet_buffer.clear();
+            state.granule = granule;
+            state.sequence += 1;
 
             page_data
         };
@@ -296,61 +260,38 @@ impl StreamWriter {
         }
     }
 
-    pub async fn push(&self, rtp_update: RtpUpdate) {
-        let opus_data = rtp_update.opus_data;
+    pub async fn push_silence(&self, tick_count: usize) {
+        self.push(&SILENCE_PACKET, tick_count).await;
+    }
+
+    pub async fn push(&self, opus_data: &[u8], tick_count: usize) {
         let toc = OpusToc::from(*opus_data.first().unwrap());
 
-        // trace!("[{}] <{}> RTP Timestamp: {}", self.guild_id, self.user_id, rtp_update.timestamp.0.0);
-
-        let last_timestamp = self.state.lock().unwrap().packet_buffer.last_timestamp.clone();
-        if let Some(last_timestamp) = last_timestamp {
-            let timestamp_diff = rtp_update.timestamp - last_timestamp.0.0;
-            if timestamp_diff.0.0 != toc.sample_count() as u32 {
-                trace!("[{}] <{}> Dumping after {}s gap... [new = {}, last = {}, diff = {}, expected = {}]",
-                    self.guild_id, self.user_id,
-                    timestamp_diff.0.0 as f32 / toc.bandwidth.sample_rate() as f32,
-                    rtp_update.timestamp.0.0,
-                    last_timestamp.0.0,
-                    timestamp_diff.0.0,
-                    toc.sample_count()
-                );
-
-                self.dump(false).await;
-
-                if timestamp_diff.0.0 > toc.sample_count() as u32 {
-                    let silence_needed = timestamp_diff - toc.sample_count() as u32;
-                    self.fill_silence(silence_needed.0.0 as usize, last_timestamp.0.0).await;
-                }
-            }
-        }
-
         let dump = {
-            let mut state = self.state.lock().unwrap();
-            let packet_buffer = &mut state.packet_buffer;
-
-            packet_buffer.lengths.push(opus_data.len() as u16);
-            packet_buffer.total_length += opus_data.len();
-
-            packet_buffer.tocs.push(toc);
-
-            packet_buffer.opus.extend_from_slice(opus_data.as_slice());
-
-            packet_buffer.last_timestamp = Some(rtp_update.timestamp);
-
-            if packet_buffer.first_timestamp.is_none() {
-                packet_buffer.first_timestamp = Some(rtp_update.timestamp);
-            }
-
-            packet_buffer.lengths.len() >= DUMP_PACKETS || packet_buffer.total_length >= DUMP_LENGTH
+            let state = &self.state.lock().unwrap();
+            state.packet_buffer.segments.would_split(opus_data.len()).is_some() || state.packet_buffer.total_samples > MAX_SAMPLES_PER_PAGE
         };
 
         if dump {
-            self.dump(false).await
+            self.dump(false).await;
         }
+
+        let mut state = self.state.lock().unwrap();
+
+        if tick_count != state.tick_count + 1 {
+            warn!("[{}] <{}> Discontinuous tick count! (was: {}, now: {tick_count})", self.guild_id, self.user_id, state.tick_count);
+        }
+        state.tick_count = tick_count;
+
+        let packet_buffer = &mut state.packet_buffer;
+        packet_buffer.segments.push_packet(opus_data.len());
+        packet_buffer.total_samples += toc.sample_count();
+        packet_buffer.tocs.push(toc);
+        packet_buffer.opus.extend_from_slice(opus_data);
     }
 
     pub async fn finish(&self) {
-        debug!("[{}] <{}> Finishing StreamWriter...", self.guild_id, self.user_id);
+        trace!("[{}] <{}> Finishing StreamWriter...", self.guild_id, self.user_id);
         self.dump(true).await
     }
 }

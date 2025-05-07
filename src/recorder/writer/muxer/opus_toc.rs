@@ -14,8 +14,8 @@ pub enum OpusMode {
     Celt,
 }
 
-impl From<u8> for OpusMode {
-    fn from(value: u8) -> Self {
+impl OpusMode {
+    const fn from(value: u8) -> Self {
         match value {
             0..=11 => OpusMode::Silk,
             12..=15 => OpusMode::Hybrid,
@@ -35,7 +35,7 @@ pub enum Bandwidth {
 }
 
 impl Bandwidth {
-    pub fn sample_rate(self) -> u32 {
+    pub const fn sample_rate(self) -> u32 {
         match self {
             Bandwidth::Narrowband => 8_000,
             Bandwidth::Mediumband => 12_000,
@@ -44,10 +44,8 @@ impl Bandwidth {
             Bandwidth::Fullband => 48_000,
         }
     }
-}
 
-impl From<u8> for Bandwidth {
-    fn from(value: u8) -> Self {
+    const fn from(value: u8) -> Self {
         match value {
             0..=3 | 16..=19 => Bandwidth::Narrowband,
             4..=7 => Bandwidth::Mediumband,
@@ -81,24 +79,7 @@ impl FrameSize {
         }
     }
 
-    fn per_second(self) -> usize {
-        match self {
-            FrameSize::Ms2_5 => 400,
-            FrameSize::Ms5 => 200,
-            FrameSize::Ms10 => 100,
-            FrameSize::Ms20 => 50,
-            FrameSize::Ms40 => 25,
-            FrameSize::Ms60 => 17,
-        }
-    }
-
-    pub fn samples(self, bandwidth: Bandwidth) -> usize {
-        bandwidth.sample_rate() as usize / self.per_second()
-    }
-}
-
-impl From<u8> for FrameSize {
-    fn from(value: u8) -> Self {
+    const fn from(value: u8) -> Self {
         match value {
             0..=3 => {
                 let base = 0;
@@ -199,8 +180,8 @@ pub enum FrameCount {
     Arbitrary,
 }
 
-impl From<u8> for FrameCount {
-    fn from(value: u8) -> Self {
+impl FrameCount {
+    const fn from(value: u8) -> Self {
         match value & 0b11 {
             0b00 => FrameCount::One,
             0b01 => FrameCount::TwoEqual,
@@ -211,8 +192,15 @@ impl From<u8> for FrameCount {
     }
 }
 
-impl From<u8> for OpusToc {
-    fn from(value: u8) -> Self {
+impl OpusToc {
+    pub fn sample_count(&self) -> usize {
+        let sample_rate: u32 = self.bandwidth.sample_rate();
+        let frame_length = self.frame_size.to_10_000_factor();
+
+        ((sample_rate as usize) * frame_length) / 10_000
+    }
+
+    pub const fn from(value: u8) -> Self {
         let config = value >> 3;
         let frame_count_bits = value & 0b0000_0011;
 
@@ -231,14 +219,5 @@ impl From<u8> for OpusToc {
             stereo,
             frame_count,
         }
-    }
-}
-
-impl OpusToc {
-    pub fn sample_count(&self) -> usize {
-        let sample_rate: u32 = self.bandwidth.sample_rate();
-        let frame_length = self.frame_size.to_10_000_factor();
-
-        ((sample_rate as usize) * frame_length) / 10_000
     }
 }

@@ -1,6 +1,5 @@
 use crate::recorder::recorder::Recorder;
-use chrono::Utc;
-use serenity::all::{CommandInteraction, Context, CreateEmbed, CreateEmbedFooter, CreateInteractionResponseMessage, EditInteractionResponse, InteractionContext};
+use serenity::all::{CommandInteraction, Context, CreateAttachment, CreateEmbed, CreateEmbedFooter, CreateInteractionResponseFollowup, CreateInteractionResponseMessage, EditInteractionResponse, InteractionContext};
 use serenity::builder::{CreateCommand, CreateInteractionResponse};
 
 pub const NAME: &str = "finish";
@@ -16,7 +15,7 @@ pub async fn run(ctx: &Context, cmd: &CommandInteraction) {
 
     match rec_man.finish(ctx, guild_id).await {
         Ok(metadata) => {
-            let duration = Utc::now().signed_duration_since(metadata.started);
+            let duration = metadata.ended.signed_duration_since(metadata.started);
 
             let mut user_string = String::new();
             {
@@ -43,6 +42,38 @@ pub async fn run(ctx: &Context, cmd: &CommandInteraction) {
 
             if let Err(e) = cmd.edit_response(ctx, resp).await {
                 error!("Error editing response to the interaction: {e:?}");
+            }
+
+            match metadata.zip_rx.await {
+                Ok(x) => {
+                    match x {
+                        Ok(zip_path) => {
+                            let fup_attachment = match CreateAttachment::path(zip_path).await {
+                                Ok(x) => x,
+                                Err(e) => {
+                                    error!("Failed to create attachment: {e:?}");
+                                    return;
+                                }
+                            };
+
+                            let followup = CreateInteractionResponseFollowup::new().add_file(fup_attachment);
+
+                            if let Err(e) = cmd.create_followup(ctx, followup).await {
+                                error!("Error sending followup to the interaction: {e:?}");
+                                let followup = CreateInteractionResponseFollowup::new().content(format!("Failed to send .zip (file too large?): {e:?}"));
+                                if let Err(e) = cmd.create_followup(ctx, followup).await {
+                                    error!("Error sending followup to explain why the followup failed (ironic): {e:?}");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to zip recordings: {e:?}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to receive zipper message: {e:?}");
+                }
             }
         }
         Err(e) => {

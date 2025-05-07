@@ -1,24 +1,38 @@
 mod call_writer;
 mod stream_writer;
 mod muxer;
+mod zipper;
 
 use crate::recorder::writer::call_writer::CallWriter;
-use crate::recorder::{RecorderConfig, RecordingMetadata};
+use crate::recorder::{RecorderConfig, RecordingMetadata, RecordingSummary};
 use chrono::Utc;
 use dashmap::DashMap;
 use serenity::all::{GuildId, UserId};
-use songbird::packet::wrap::{Wrap16, Wrap32};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
 #[derive(Debug, PartialEq)]
-pub struct RtpUpdate {
-    pub guild: GuildId,
+pub struct OpusUpdate {
     pub user: UserId,
-    pub ssrc: u32,
-    pub timestamp: Wrap32,
-    pub sequence: Wrap16,
     pub opus_data: Vec<u8>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct UserUpdate {
+    pub user: UserId,
+    pub username: Option<String>,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum VoiceUpdateType {
+    Opus(Vec<OpusUpdate>),
+    User(UserUpdate),
+}
+
+#[derive(Debug, PartialEq)]
+pub struct VoiceUpdate {
+    pub guild: GuildId,
+    pub update: VoiceUpdateType,
 }
 
 #[derive(Debug)]
@@ -43,33 +57,35 @@ impl Writer {
         let rec_metadata = RecordingMetadata {
             guild_id,
             output_dir,
+            output_dir_name,
             started,
         };
 
         self.calls.insert(guild_id, Arc::new(CallWriter::new(rec_metadata)));
     }
 
-    pub async fn finish(&self, guild_id: GuildId) {
+    pub async fn finish(&self, guild_id: GuildId) -> Option<RecordingSummary> {
         let call = self.calls.remove(&guild_id);
         match call {
             None => {
                 error!("Tried to finish non-existent recording for guild: {guild_id}");
+                None
             }
-            Some(call) => {
-                call.1.finish().await;
+            Some((_, call)) => {
+                call.finish().await
             }
         }
     }
 
-    pub fn run(writer: Arc<Self>, mut rtp_rx: mpsc::Receiver<RtpUpdate>) {
+    pub fn run(writer: Arc<Self>, mut voice_rx: mpsc::Receiver<VoiceUpdate>) {
         tokio::spawn(async move {
-            while let Some(rtp_update) = rtp_rx.recv().await {
-                match writer.calls.get(&rtp_update.guild) {
+            while let Some(voice_update) = voice_rx.recv().await {
+                match writer.calls.get(&voice_update.guild) {
                     Some(call) => {
-                        call.push(rtp_update).await;
+                        call.push(voice_update.update).await;
                     }
                     None => {
-                        error!("Received voice data for guild without call: {}", rtp_update.guild);
+                        error!("Received voice data for guild without call: {}", voice_update.guild);
                     }
                 }
             }

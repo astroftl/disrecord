@@ -1,11 +1,77 @@
 use crate::recorder::writer::muxer::crc::vorbis_crc32;
 
-/// Not technically correct, but makes my life easier.
-const MAX_PAYLOAD: usize = 65_025;
-/// Maximum size of a worst-case Ogg header.
-const MAX_HEADER: usize = 282;
+/// The maximum number of payload bytes in an Ogg page.
+///
+const MAX_PAYLOAD_PER_PAGE: usize = 65_025;
 /// Maximum number of packets in a page.
-pub const MAX_PACKETS_PER_PAGE: usize = 255;
+pub const MAX_SEGMENTS_PER_FRAME: usize = 255;
+const MAX_SEGMENT_SIZE: u16 = 255;
+
+#[derive(Debug)]
+pub struct OggSegments {
+    lacings: Vec<u8>,
+    total_size: u16,
+}
+
+impl OggSegments {
+    pub fn new() -> Self {
+        Self {
+            lacings: Vec::new(),
+            total_size: 0,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.lacings.clear();
+        self.total_size = 0;
+    }
+
+    /// Adds a segment to the segment table.
+    /// Returns the length of leftover bytes that do not fit into the packet.
+    pub fn push_packet(&mut self, length: usize) -> Option<u16> {
+        let full_segments = length as u16 / MAX_SEGMENT_SIZE;
+        let leftover_bytes = length as u16 % MAX_SEGMENT_SIZE;
+
+        let mut full_segments_left = full_segments;
+
+        while full_segments_left > 0 {
+            if self.lacings.len() == MAX_PAYLOAD_PER_PAGE {
+                let overflow_bytes = (full_segments_left * MAX_SEGMENT_SIZE) + leftover_bytes;
+                return Some(overflow_bytes);
+            }
+
+            self.lacings.push(MAX_SEGMENT_SIZE as u8);
+            self.total_size += MAX_SEGMENT_SIZE;
+            full_segments_left -= 1;
+        }
+
+        if self.lacings.len() == MAX_PAYLOAD_PER_PAGE {
+            return Some(leftover_bytes);
+        }
+
+        self.lacings.push(leftover_bytes as u8);
+        self.total_size += leftover_bytes;
+
+        None
+    }
+
+    /// Returns Some(x) where x is the number of bytes that would overflow to the following
+    /// packet, or None if the packet fits entirely within the current page.
+    pub fn would_split(&self, length: usize) -> Option<u16> {
+        let needed_full_segments = length as u16 / MAX_SEGMENT_SIZE;
+        let needed_leftover_bytes = length as u16 % MAX_SEGMENT_SIZE;
+        let needed_total_segments = needed_full_segments + 1;
+
+        let current_segments = self.lacings.len() as u16;
+
+        let segment_overage = (current_segments + needed_total_segments).saturating_sub(MAX_SEGMENTS_PER_FRAME as u16);
+        if segment_overage > 0 {
+            Some( ((segment_overage - 1) * MAX_SEGMENT_SIZE) + needed_leftover_bytes )
+        } else {
+            None
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct OggHeader {
@@ -19,20 +85,19 @@ pub struct OggHeader {
     /// Random number per stream.
     pub serial: u32,
     pub sequence: u32,
-    pub segment_lengths: Vec<u16>
 }
 
 impl OggHeader {
-    pub fn build_page(&self, payload: &[u8]) -> Option<Vec<u8>> {
+    pub fn build_page(&self, segments: &OggSegments, payload: &[u8]) -> Option<Vec<u8>> {
         let mut buffer= Vec::new();
 
-        if payload.len() > MAX_PAYLOAD {
+        if payload.len() > MAX_PAYLOAD_PER_PAGE {
             error!("Payload too large: {} bytes", payload.len());
             return None;
         }
 
-        if self.segment_lengths.len() > 255 {
-            error!("Too many segments: {}", self.segment_lengths.len());
+        if segments.lacings.len() > MAX_SEGMENTS_PER_FRAME {
+            error!("Too many segments: {}", segments.lacings.len());
             return None;
         }
 
@@ -58,24 +123,8 @@ impl OggHeader {
         // buffer[22..=25] is the CRC checksum, to be calculated after.
         buffer.extend_from_slice(&[0, 0, 0, 0]);
 
-        let mut lacings: Vec<u8> = Vec::new();
-        for segment_length in &self.segment_lengths {
-            let mut segment_length = segment_length.clone();
-
-            while segment_length > 255 {
-                lacings.push(255);
-                segment_length -= 255;
-            }
-
-            if segment_length == 255 {
-                lacings.push(0);
-            } else {
-                lacings.push(segment_length as u8);
-            }
-        }
-
-        buffer.push(lacings.len() as u8); // 26
-        buffer.extend_from_slice(lacings.as_slice());
+        buffer.push(segments.lacings.len() as u8); // 26
+        buffer.extend_from_slice(segments.lacings.as_slice());
 
         buffer.extend_from_slice(payload);
 

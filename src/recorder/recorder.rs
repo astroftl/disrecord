@@ -6,24 +6,24 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
-use crate::recorder::writer::{RtpUpdate, Writer};
+use crate::recorder::writer::{VoiceUpdate, Writer};
 
 #[derive(Debug)]
 pub struct Recorder {
     writer: Arc<Writer>,
-    rtp_tx: mpsc::Sender<RtpUpdate>
+    voice_tx: mpsc::Sender<VoiceUpdate>
 }
 
 impl Recorder {
     pub fn new(config: RecorderConfig) -> Self {
-        let (rtp_tx, rtp_rx) = mpsc::channel(1024);
+        let (voice_tx, voice_rx) = mpsc::channel(1024);
 
         let writer = Arc::new(Writer::new(config));
-        Writer::run(writer.clone(), rtp_rx);
+        Writer::run(writer.clone(), voice_rx);
 
         Self {
             writer,
-            rtp_tx,
+            voice_tx,
         }
     }
 
@@ -48,9 +48,9 @@ impl Recorder {
             let call_lock = sbird.get_or_insert(guild_id);
             let mut call = call_lock.lock().await;
 
-            let voice_receiver = VoiceReceiver::new(guild_id, self.rtp_tx.clone()).await;
+            let voice_receiver = VoiceReceiver::new(guild_id, ctx, self.voice_tx.clone()).await;
 
-            call.add_global_event(CoreEvent::RtpPacket.into(), voice_receiver.clone());
+            call.add_global_event(CoreEvent::VoiceTick.into(), voice_receiver.clone());
             call.add_global_event(CoreEvent::SpeakingStateUpdate.into(), voice_receiver);
         }
 
@@ -130,21 +130,15 @@ impl Recorder {
                 error!("[{guild_id}] Failed to leave channel: {e:?}");
                 Err(format!("Failed to leave channel: {e}"))
             } else {
-                // TODO: Finalize recording in VoiceReceiver.
                 info!("[{guild_id}] Left channel {channel_id} and finalized recording!");
 
-                self.writer.finish(guild_id).await;
-
-                // TODO: Remove
-
-                let rec = RecordingSummary {
-                    guild_id,
-                    output_dir: Default::default(),
-                    started: Default::default(),
-                    known_users: Default::default(),
-                };
-
-                Ok(rec)
+                match self.writer.finish(guild_id).await {
+                    None => {
+                        error!("[{guild_id}] Failed to finish recording!");
+                        Err("Failed to finish recording".to_string())
+                    },
+                    Some(summary) => Ok(summary)
+                }
             }
         } else {
             Err("Not in a voice channel!".to_string())

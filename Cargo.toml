@@ -13,3 +13,4 @@ tokio = { version = "1", features = ["full"] }
 serenity = { version = "0", default-features = false, features = ["full"] }
 songbird = {  version = "0", default-features = true, features = ["receive"], path = "../songbird" }
 dashmap = "6"
+async_zip = { version = "0", features = ["full"]}

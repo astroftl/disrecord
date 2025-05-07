@@ -1,5 +1,4 @@
 pub const PRESKIP_DEFAULT: u16 = 3840;
-pub const GRANULE_ENTIRE_PACKET: u64 = u64::MAX;
 
 pub struct ChannelMappingTable {
     pub stream_count: u8,
@@ -7,6 +6,7 @@ pub struct ChannelMappingTable {
     pub channel_mapping: Vec<u8>,
 }
 
+#[allow(dead_code)]
 pub enum MappingFamily {
     Rtp,
     Vorbis(ChannelMappingTable),
@@ -75,6 +75,8 @@ impl CommentHeader {
 
         header.extend_from_slice((self.vendor.len() as u32).to_le_bytes().as_slice());
         header.extend_from_slice(self.vendor.as_bytes());
+        
+        header.extend_from_slice(self.comments.len().to_le_bytes().as_slice());
 
         for comment in &self.comments {
             header.extend_from_slice((comment.len() as u32).to_le_bytes().as_slice());
