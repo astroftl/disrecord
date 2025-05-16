@@ -59,9 +59,6 @@ impl CallWriter {
                     stream.push_silence(tick_count).await;
                 }
             }
-            VoiceUpdateType::Opus(opus_update) => {
-                
-            }
             VoiceUpdateType::User(user_update) => {
                 let user = user_update.user;
 

@@ -5,7 +5,7 @@ use serenity::builder::{CreateCommand, CreateInteractionResponse};
 
 pub const NAME: &str = "start";
 
-async fn handle_join_and_record_with_response(ctx: &Context, cmd: &CommandInteraction, guild_id: GuildId, channel_id: ChannelId) {
+async fn handle_join_and_record_with_response(ctx: &Context, cmd: &CommandInteraction, guild_id: GuildId, channel_id: ChannelId, cmd_channel: ChannelId) {
     let rec_man = Recorder::get(ctx).await.expect("RecordManager doesn't exist!");
 
     match rec_man.join(ctx, guild_id, channel_id).await {
@@ -18,6 +18,9 @@ async fn handle_join_and_record_with_response(ctx: &Context, cmd: &CommandIntera
             cmd.create_response(ctx, CreateInteractionResponse::Message(resp)).await.unwrap_or_else(|e| {
                 error!("Error responding to the interaction: {e:?}");
             });
+
+            let resp = cmd.get_response(&ctx.http).await.ok();
+            rec_man.set_resp(guild_id, (cmd_channel, resp));
         }
         Err(e) => {
             reset_presence(ctx, guild_id).await;
@@ -35,6 +38,7 @@ async fn handle_join_and_record_with_response(ctx: &Context, cmd: &CommandIntera
 
 pub async fn run(ctx: &Context, cmd: &CommandInteraction) {
     let guild_id = cmd.guild_id.unwrap();
+    let cmd_channel = cmd.channel_id;
     let channel_id = get_channel_or_default_current(ctx, cmd).await;
     
     // TODO: Check that channel is in the guild and that the bot has access to it before joining.
@@ -51,7 +55,7 @@ pub async fn run(ctx: &Context, cmd: &CommandInteraction) {
         });
     } else {
         if let Some(channel_id) = channel_id {
-            handle_join_and_record_with_response(ctx, cmd, guild_id, channel_id).await;
+            handle_join_and_record_with_response(ctx, cmd, guild_id, channel_id, cmd_channel).await;
         } else {
             let resp = CreateInteractionResponseMessage::new()
                 .content("You are not in a voice channel, and did not provide one as an argument!")

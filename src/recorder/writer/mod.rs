@@ -4,6 +4,8 @@ mod muxer;
 mod zipper;
 mod mixer;
 
+pub use muxer::opus_toc;
+
 use crate::recorder::writer::call_writer::CallWriter;
 use crate::recorder::{RecorderConfig, RecordingMetadata, RecordingSummary};
 use chrono::Utc;
@@ -26,7 +28,6 @@ pub struct UserUpdate {
 
 #[derive(Debug, PartialEq)]
 pub enum VoiceUpdateType {
-    Opus(OpusUpdate),
     VcUpdate(Vec<OpusUpdate>),
     User(UserUpdate),
 }
