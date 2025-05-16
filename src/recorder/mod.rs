@@ -22,6 +22,7 @@ pub struct RecordingSummary {
     pub ended: DateTime<Utc>,
     pub known_users: HashSet<UserId>,
     pub zip_rx: Receiver<Result<PathBuf, String>>,
+    pub mix_rx: Receiver<Result<PathBuf, String>>,
 }
 
 #[derive(Clone, Debug)]

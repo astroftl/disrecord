@@ -76,7 +76,7 @@ impl CommentHeader {
         header.extend_from_slice((self.vendor.len() as u32).to_le_bytes().as_slice());
         header.extend_from_slice(self.vendor.as_bytes());
         
-        header.extend_from_slice(self.comments.len().to_le_bytes().as_slice());
+        header.extend_from_slice((self.comments.len() as u32).to_le_bytes().as_slice());
 
         for comment in &self.comments {
             header.extend_from_slice((comment.len() as u32).to_le_bytes().as_slice());

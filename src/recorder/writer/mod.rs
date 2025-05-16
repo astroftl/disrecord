@@ -2,6 +2,7 @@ mod call_writer;
 mod stream_writer;
 mod muxer;
 mod zipper;
+mod mixer;
 
 use crate::recorder::writer::call_writer::CallWriter;
 use crate::recorder::{RecorderConfig, RecordingMetadata, RecordingSummary};
@@ -25,7 +26,8 @@ pub struct UserUpdate {
 
 #[derive(Debug, PartialEq)]
 pub enum VoiceUpdateType {
-    Opus(Vec<OpusUpdate>),
+    Opus(OpusUpdate),
+    VcUpdate(Vec<OpusUpdate>),
     User(UserUpdate),
 }
 

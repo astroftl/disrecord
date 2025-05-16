@@ -7,6 +7,7 @@ use serenity::all::UserId;
 use std::sync::{Arc, Mutex};
 use chrono::Utc;
 use tokio::sync::oneshot::channel;
+use crate::recorder::writer::mixer::mix_files;
 use crate::recorder::writer::zipper::zip_files;
 
 #[derive(Debug)]
@@ -29,7 +30,7 @@ impl CallWriter {
 
     pub async fn push(&self, update_data: VoiceUpdateType) {
         match update_data {
-            VoiceUpdateType::Opus(opus_update) => {
+            VoiceUpdateType::VcUpdate(opus_update) => {
                 let tick_count = {
                     let mut counter = self.tick_count.lock().unwrap();
                     *counter += 1;
@@ -58,6 +59,9 @@ impl CallWriter {
                     stream.push_silence(tick_count).await;
                 }
             }
+            VoiceUpdateType::Opus(opus_update) => {
+                
+            }
             VoiceUpdateType::User(user_update) => {
                 let user = user_update.user;
 
@@ -83,8 +87,12 @@ impl CallWriter {
 
     pub async fn finish(&self) -> Option<RecordingSummary> {
         debug!("[{}] Finishing CallWriter!", self.metadata.guild_id);
+
+        let mut stream_files = Vec::new();
+
         for stream in &self.streams {
             stream.finish().await;
+            stream_files.push(stream.filepath());
         }
 
         self.streams.clear();
@@ -94,13 +102,24 @@ impl CallWriter {
             known_users.insert(*user);
         }
 
+        let (mix_tx, mix_rx) = channel();
+
+        let mix_path = self.metadata.output_dir.clone();
+        let mix_name = format!("{}.opus", self.metadata.output_dir_name);
+        let mix_guild_id = self.metadata.guild_id.clone();
+        let mix_input_files = stream_files.clone();
+        tokio::spawn(async move {
+            mix_files(&mix_input_files, mix_path, mix_name, mix_guild_id, mix_tx).await;
+        });
+
         let (zip_tx, zip_rx) = channel();
 
         let zip_path = self.metadata.output_dir.clone();
         let zip_name = format!("{}.zip", self.metadata.output_dir_name);
         let zip_guild_id = self.metadata.guild_id.clone();
+        let zip_input_files = stream_files.clone();
         tokio::spawn(async move {
-            zip_files(zip_path, zip_name, zip_guild_id, zip_tx).await;
+            zip_files(&zip_input_files, zip_path, zip_name, zip_guild_id, zip_tx).await;
         });
 
         Some(RecordingSummary {
@@ -108,6 +127,7 @@ impl CallWriter {
             ended: Utc::now(),
             known_users,
             zip_rx,
+            mix_rx,
         })
     }
 }

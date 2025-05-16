@@ -49,8 +49,11 @@ impl Recorder {
             let mut call = call_lock.lock().await;
 
             let voice_receiver = VoiceReceiver::new(guild_id, ctx, self.voice_tx.clone()).await;
+            self.writer.start(guild_id);
 
-            call.add_global_event(CoreEvent::VoiceTick.into(), voice_receiver.clone());
+            // call.add_global_event(CoreEvent::VoiceTick.into(), voice_receiver.clone());
+            call.add_global_event(CoreEvent::RtpPacket.into(), voice_receiver.clone());
+            call.add_global_event(CoreEvent::ClientDisconnect.into(), voice_receiver.clone());
             call.add_global_event(CoreEvent::SpeakingStateUpdate.into(), voice_receiver);
         }
 
@@ -61,12 +64,11 @@ impl Recorder {
 
             // Although we failed to join, we need to clear out existing event handlers on the call.
             _ = sbird.remove(guild_id).await;
+            self.writer.finish(guild_id).await;
 
             Err(format!("Failed to join voice channel: {e}"))
         } else {
             info!("[{guild_id}] Joined channel {channel_id} and began recording!");
-
-            self.writer.start(guild_id);
 
             Ok(())
         }

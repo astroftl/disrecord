@@ -105,6 +105,58 @@ impl EventHandler for VoiceReceiver {
                     }
                 }
             },
+            Ctx::RtpPacket(rtp_data) => {
+                let rtp = rtp_data.rtp().from_packet();
+                let ssrc = rtp.ssrc;
+                
+                match self.inner.ssrc_users.get(&ssrc) {
+                    None => {
+                        error!("[{}] Got SSRC {ssrc} which does not match a known user!", self.inner.guild_id);
+                    }
+                    Some(user) => {
+                        let rtp = rtp_data.rtp().from_packet();
+
+                        // let head = rtp_data.payload_offset;
+                        // let tail = rtp_data.payload_end_pad;
+                        // let opus_data = rtp.payload[head..rtp.payload.len() - tail].to_owned();
+
+                        // Hack until I can fix Songbird's underlying sizing issues.
+                        let payload = if rtp.extension == 1 {
+                            let ext_pkt = RtpExtensionPacket::new(&rtp.payload).unwrap();
+                            let ext = ext_pkt.from_packet();
+                            ext.payload
+                        } else {
+                            trace!("[{}] <{}> Got RTP without extension: {rtp:?}", self.inner.guild_id, user.value());
+                            rtp.payload
+                        };
+
+                        // 20 is constant with current Discord encryption scheme.
+                        let opus_data = if payload.len() > 20 {
+                            payload[..payload.len() - 20].to_owned()
+                        } else {
+                            trace!("[{}] <{}> Got payload less than 20: {payload:02x?}", self.inner.guild_id, user.value());
+                            payload.to_owned()
+                        };
+
+                        // trace!("rtp: {:02x?}", rtp_data.rtp().packet());
+                        // trace!("ext: {:02x?}", rtp.payload);
+                        // trace!("pay: {:02x?}", payload);
+                        // trace!("opus: {:02x?}", opus_data);
+
+                        let opus_update = OpusUpdate {
+                            user: *user,
+                            opus_data,
+                        };
+
+                        let voice_update = VoiceUpdate {
+                            guild: self.inner.guild_id,
+                            update: VoiceUpdateType::Opus(opus_update),
+                        };
+
+                        self.inner.voice_tx.send(voice_update).await.unwrap();
+                    }
+                }
+            },
             Ctx::VoiceTick(voice_data) => {
                 let mut update_data = Vec::new();
 
@@ -122,12 +174,23 @@ impl EventHandler for VoiceReceiver {
                                 // let opus_data = rtp.payload[head..rtp.payload.len() - tail].to_owned();
 
                                 // Hack until I can fix Songbird's underlying sizing issues.
-                                let ext_pkt = RtpExtensionPacket::new(&rtp.payload).unwrap();
-                                let ext = ext_pkt.from_packet();
-                                let payload = ext.payload;
+                                let payload = if rtp.extension == 1 {
+                                    let ext_pkt = RtpExtensionPacket::new(&rtp.payload).unwrap();
+                                    let ext = ext_pkt.from_packet();
+                                    ext.payload
+                                } else {
+                                    trace!("[{}] <{}> Got RTP without extension: {rtp:?}", self.inner.guild_id, user.value());
+                                    rtp.payload
+                                };
 
                                 // 20 is constant with current Discord encryption scheme.
-                                let opus_data = payload[..payload.len() - 20].to_owned();
+                                let opus_data = if payload.len() > 20 {
+                                    payload[..payload.len() - 20].to_owned()
+                                } else {
+                                    trace!("[{}] <{}> Got payload less than 20: {payload:02x?}", self.inner.guild_id, user.value());
+                                    payload.to_owned()
+                                };
+
                                 // trace!("rtp: {:02x?}", rtp_data.rtp().packet());
                                 // trace!("ext: {:02x?}", rtp.payload);
                                 // trace!("pay: {:02x?}", payload);
@@ -146,10 +209,13 @@ impl EventHandler for VoiceReceiver {
 
                 let voice_update = VoiceUpdate {
                     guild: self.inner.guild_id,
-                    update: VoiceUpdateType::Opus(update_data),
+                    update: VoiceUpdateType::VcUpdate(update_data),
                 };
 
                 self.inner.voice_tx.send(voice_update).await.unwrap();
+            },
+            Ctx::ClientDisconnect(disconnect_data) => {
+                // TODO: Check if we're the last user in the channel, then disconnect.
             },
             _ => {
                 // We won't be registering this struct for any more event classes.

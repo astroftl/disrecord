@@ -8,7 +8,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex as AsyncMutex;
 use crate::recorder::writer::muxer::ogg::{OggHeader, OggSegments, MAX_SEGMENTS_PER_FRAME};
 use crate::recorder::writer::muxer::ogg_opus::{CommentHeader, IdHeader, MappingFamily, PRESKIP_DEFAULT};
-use crate::recorder::writer::muxer::opus_toc::{Bandwidth, OpusToc};
+use crate::recorder::writer::muxer::opus_toc::{Bandwidth, FrameCount, FrameSize, OpusToc};
 
 const DISCORD_BANDWIDTH: Bandwidth = Bandwidth::Fullband;
 const SILENCE_PACKET: [u8; 3] = [0xF8, 0xFF, 0xFE];
@@ -211,7 +211,7 @@ impl StreamWriter {
                 continuation: false,
                 begin_stream: false,
                 end_stream: false,
-                granule: last_granule as u64,
+                granule: last_granule,
                 serial: self.serial,
                 sequence,
             };
@@ -225,6 +225,13 @@ impl StreamWriter {
                 let mut file =  self.file.lock().await;
                 file.write_all(page_data.as_slice()).await.unwrap();
             }
+        }
+
+        {
+            let mut state = self.state.lock().unwrap();
+            state.tick_count = ticks;
+            state.granule = last_granule;
+            state.sequence = sequence;
         }
     }
 
@@ -267,9 +274,29 @@ impl StreamWriter {
     pub async fn push(&self, opus_data: &[u8], tick_count: usize) {
         let toc = OpusToc::from(*opus_data.first().unwrap());
 
+        let mut show_packet = false;
+        if toc.frame_count != FrameCount::One {
+            debug!("[{}] <{}> Got an abnormal frame count: {:?}", self.guild_id, self.user_id, toc.frame_count);
+            show_packet = true;
+        }
+
+        if toc.frame_size != FrameSize::Ms20 {
+            debug!("[{}] <{}> Got an abnormal frame size: {:?}", self.guild_id, self.user_id, toc.frame_size);
+            show_packet = true;
+        }
+
+        if toc.stereo == true {
+            debug!("[{}] <{}> Got a stereo packet!", self.guild_id, self.user_id);
+            show_packet = true;
+        }
+
+        if show_packet {
+            debug!("[{}] <{}> Abnormal TOC [{:02x}]: {toc:?}", self.guild_id, self.user_id, opus_data.first().unwrap());
+        }
+
         let dump = {
             let state = &self.state.lock().unwrap();
-            state.packet_buffer.segments.would_split(opus_data.len()).is_some() || state.packet_buffer.total_samples > MAX_SAMPLES_PER_PAGE
+            state.packet_buffer.total_samples > MAX_SAMPLES_PER_PAGE || state.packet_buffer.segments.would_split(opus_data.len()).is_some()
         };
 
         if dump {
@@ -293,6 +320,10 @@ impl StreamWriter {
     pub async fn finish(&self) {
         trace!("[{}] <{}> Finishing StreamWriter...", self.guild_id, self.user_id);
         self.dump(true).await
+    }
+
+    pub fn filepath(&self) -> PathBuf {
+        self.file_path.clone()
     }
 }
 
