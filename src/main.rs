@@ -33,13 +33,15 @@ async fn bot() {
     let app_id: ApplicationId = env::var("APP_ID").expect("Expected an APP_ID in the environment")
         .parse().expect("APP_ID is not a valid ID");
 
+    let recording_path = env::var("RECORD_DIR").unwrap_or(String::from("recordings"));
+
     let intents = GatewayIntents::non_privileged();
 
     let songbird_config = Config::default()
         .decode_mode(DecodeMode::Decrypt);
 
     let record_config = RecorderConfig {
-        base_dir: PathBuf::from("recordings"),
+        base_dir: PathBuf::from(recording_path),
         subdir_fmt: "%Y_%m_%d_%H_%M_%S".to_string(),
     };
 
