@@ -3,4 +3,5 @@
 /recordings/
 /Cargo.lock
 /.env
+/compose.yaml
 /*.log
