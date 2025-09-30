@@ -1,5 +1,4 @@
 #![feature(duration_millis_float)]
-
 #[macro_use]
 extern crate log;
 
@@ -112,7 +111,7 @@ fn setup_logger() {
                     "\x1B[{}m",
                     colors_line.get_color(&record.level()).to_fg_str()
                 ),
-                date = chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                date = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
                 target = record.target(),
                 level = colors_level.color(record.level()),
                 message = message,
