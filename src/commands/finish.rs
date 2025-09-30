@@ -60,7 +60,7 @@ pub async fn run(ctx: &Context, cmd: &CommandInteraction) {
 
                             if let Err(e) = cmd.create_followup(ctx, followup).await {
                                 error!("Error sending followup to the interaction: {e:?}");
-                                let followup = CreateInteractionResponseFollowup::new().content(format!("Failed to send .zip (file too large?): {e:?}"));
+                                let followup = CreateInteractionResponseFollowup::new().content("Failed to send .zip (file too large?)");
                                 if let Err(e) = cmd.create_followup(ctx, followup).await {
                                     error!("Error sending followup to explain why the followup failed (ironic): {e:?}");
                                 }
@@ -76,35 +76,37 @@ pub async fn run(ctx: &Context, cmd: &CommandInteraction) {
                 }
             }
 
-            match metadata.mix_rx.await {
-                Ok(x) => {
-                    match x {
-                        Ok(mix_path) => {
-                            let fup_attachment = match CreateAttachment::path(mix_path).await {
-                                Ok(x) => x,
-                                Err(e) => {
-                                    error!("Failed to create attachment: {e:?}");
-                                    return;
-                                }
-                            };
+            for mix_rx in metadata.mix_rxs {
+                match mix_rx.await {
+                    Ok(x) => {
+                        match x {
+                            Ok(mix_path) => {
+                                let fup_attachment = match CreateAttachment::path(mix_path).await {
+                                    Ok(x) => x,
+                                    Err(e) => {
+                                        error!("Failed to create attachment: {e:?}");
+                                        return;
+                                    }
+                                };
 
-                            let followup = CreateInteractionResponseFollowup::new().add_file(fup_attachment);
+                                let followup = CreateInteractionResponseFollowup::new().add_file(fup_attachment);
 
-                            if let Err(e) = cmd.create_followup(ctx, followup).await {
-                                error!("Error sending followup to the interaction: {e:?}");
-                                let followup = CreateInteractionResponseFollowup::new().content(format!("Failed to send mixed .opus (file too large?): {e:?}"));
                                 if let Err(e) = cmd.create_followup(ctx, followup).await {
-                                    error!("Error sending followup to explain why the followup failed (ironic): {e:?}");
+                                    error!("Error sending followup to the interaction: {e:?}");
+                                    let followup = CreateInteractionResponseFollowup::new().content("Failed to send mixed .opus (file too large?)");
+                                    if let Err(e) = cmd.create_followup(ctx, followup).await {
+                                        error!("Error sending followup to explain why the followup failed (ironic): {e:?}");
+                                    }
                                 }
                             }
-                        }
-                        Err(e) => {
-                            error!("Failed to mix recordings: {e:?}");
+                            Err(e) => {
+                                error!("Failed to mix recordings: {e:?}");
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    error!("Failed to receive mixer message: {e:?}");
+                    Err(e) => {
+                        error!("Failed to receive mixer message: {e:?}");
+                    }
                 }
             }
         }

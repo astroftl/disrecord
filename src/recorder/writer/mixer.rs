@@ -20,7 +20,7 @@ pub async fn do_mix_files(input_files: &Vec<PathBuf>, directory: PathBuf, output
     }
 
     let filter_complex = format!(
-        "{}amix=inputs={}[out]",
+        "{}amix=inputs={}:normalize=0",
         input_refs.join(""),
         input_files.len()
     );
@@ -30,10 +30,6 @@ pub async fn do_mix_files(input_files: &Vec<PathBuf>, directory: PathBuf, output
     ffmpeg_args.extend([
         "-filter_complex".to_string(),
         filter_complex,
-        "-map".to_string(),
-        "[out]".to_string(),
-        "-ac".to_string(),
-        "2".to_string(),
         output_path.to_string_lossy().to_string(),
     ]);
 

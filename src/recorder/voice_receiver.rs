@@ -7,12 +7,13 @@ use serenity::model::voice_gateway::payload::Speaking;
 use songbird::packet::FromPacket;
 use songbird::{Call, EventContext, EventHandler};
 use std::sync::Arc;
-use serenity::all::{Cache, CacheHttp, ChannelId, Context, GuildId, Http};
+use dashmap::mapref::one::Ref;
+use serenity::all::{Cache, CacheHttp, ChannelId, Context, GuildId, Http, Member};
 use songbird::packet::rtp::RtpExtensionPacket;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use crate::recorder::recorder::Recorder;
-use crate::recorder::writer::opus_toc::{FrameCount, FrameSize, OpusToc};
+use crate::recorder::writer::opus_toc::{FrameCount, FrameSize, OpusMode, OpusToc};
 
 #[derive(Clone, Debug)]
 struct CtxHolder {
@@ -116,67 +117,75 @@ impl EventHandler for VoiceReceiver {
 
                 for (ssrc, voice) in &voice_data.speaking {
                     if let Some(rtp_data) = &voice.packet {
-                        match self.inner.ssrc_users.get(&ssrc) {
+                        let user = self.inner.ssrc_users.get(&ssrc);
+
+                        let rtp = rtp_data.rtp().from_packet(); // TODO: Debug initial call join SSRC mismatch.
+
+                        // let rtp = rtp_data.rtp().from_packet();
+
+                        if rtp.padding == 1 {
+                            trace!("[{}]{} Skipping RTP padding packet: {rtp:?}\n{:02x?}", self.inner.guild_id, log_user_id_if_some(&user), rtp.payload);
+                            continue;
+                        }
+
+                        // let head = rtp_data.payload_offset;
+                        // let tail = rtp_data.payload_end_pad;
+                        // let opus_data = rtp.payload[head..rtp.payload.len() - tail].to_owned();
+
+                        // Hack until I can fix Songbird's underlying sizing issues.
+                        let payload = if rtp.extension == 1 {
+                            let ext_pkt = RtpExtensionPacket::new(&rtp.payload).unwrap();
+                            let ext = ext_pkt.from_packet();
+                            ext.payload
+                        } else {
+                            trace!("[{}]{} Got RTP without extension: {rtp:?}\n{:02x?}", self.inner.guild_id, log_user_id_if_some(&user), rtp.payload);
+                            rtp.payload
+                        };
+
+                        // 20 is constant with current Discord encryption scheme.
+                        let opus_data = if payload.len() > 20 {
+                            payload[..payload.len() - 20].to_owned()
+                        } else {
+                            warn!("[{}]{} Got payload less than 20: {payload:02x?}", self.inner.guild_id, log_user_id_if_some(&user));
+                            payload.to_owned()
+                        };
+
+                        // trace!("rtp: {:02x?}", rtp_data.rtp().packet());
+                        // trace!("ext: {:02x?}", rtp.payload);
+                        // trace!("pay: {:02x?}", payload);
+                        // trace!("opus: {:02x?}", opus_data);
+
+                        let toc = OpusToc::from(opus_data[0]);
+
+                        let mut show_packet = false;
+                        if toc.frame_count != FrameCount::One {
+                            debug!("[{}]{} Got an abnormal frame count: {:?}", self.inner.guild_id, log_user_id_if_some(&user), toc.frame_count);
+                            show_packet = true;
+                        }
+
+                        if toc.frame_size != FrameSize::Ms20 {
+                            debug!("[{}]{} Got an abnormal frame size: {:?}", self.inner.guild_id, log_user_id_if_some(&user), toc.frame_size);
+                            show_packet = true;
+                        }
+
+                        if toc.stereo == true {
+                            debug!("[{}]{} Got a stereo packet!", self.inner.guild_id, log_user_id_if_some(&user));
+                            show_packet = true;
+                        }
+
+                        if show_packet {
+                            debug!("[{}]{} Abnormal TOC [{:02x}]: {toc:?}", self.inner.guild_id, log_user_id_if_some(&user), opus_data.first().unwrap());
+                        }
+
+                        match user {
                             None => {
-                                error!("[{}] Got SSRC {ssrc} which does not match a known user!", self.inner.guild_id);
+                                if toc.mode == OpusMode::Celt {
+                                    trace!("[{}] Got silence from SSRC {ssrc} which does not match a known user: {rtp_data:?}", self.inner.guild_id);
+                                } else {
+                                    warn!("[{}] Got audio from SSRC {ssrc} which does not match a known user: {rtp_data:?}", self.inner.guild_id);
+                                }
                             }
                             Some(user) => {
-                                let rtp = rtp_data.rtp().from_packet();
-
-                                if rtp.padding == 1 {
-                                    trace!("[{}] <{}> Skipping RTP padding packet: {rtp:?}\n{:02x?}", self.inner.guild_id, user.value(), rtp.payload);
-                                    continue;
-                                }
-
-                                // let head = rtp_data.payload_offset;
-                                // let tail = rtp_data.payload_end_pad;
-                                // let opus_data = rtp.payload[head..rtp.payload.len() - tail].to_owned();
-
-                                // Hack until I can fix Songbird's underlying sizing issues.
-                                let payload = if rtp.extension == 1 {
-                                    let ext_pkt = RtpExtensionPacket::new(&rtp.payload).unwrap();
-                                    let ext = ext_pkt.from_packet();
-                                    ext.payload
-                                } else {
-                                    trace!("[{}] <{}> Got RTP without extension: {rtp:?}\n{:02x?}", self.inner.guild_id, user.value(), rtp.payload);
-                                    rtp.payload
-                                };
-
-                                // 20 is constant with current Discord encryption scheme.
-                                let opus_data = if payload.len() > 20 {
-                                    payload[..payload.len() - 20].to_owned()
-                                } else {
-                                    warn!("[{}] <{}> Got payload less than 20: {payload:02x?}", self.inner.guild_id, user.value());
-                                    payload.to_owned()
-                                };
-
-                                // trace!("rtp: {:02x?}", rtp_data.rtp().packet());
-                                // trace!("ext: {:02x?}", rtp.payload);
-                                // trace!("pay: {:02x?}", payload);
-                                // trace!("opus: {:02x?}", opus_data);
-
-                                let toc = OpusToc::from(opus_data[0]);
-                                
-                                let mut show_packet = false;
-                                if toc.frame_count != FrameCount::One {
-                                    debug!("[{}] <{}> Got an abnormal frame count: {:?}", self.inner.guild_id, user.value(), toc.frame_count);
-                                    show_packet = true;
-                                }
-
-                                if toc.frame_size != FrameSize::Ms20 {
-                                    debug!("[{}] <{}> Got an abnormal frame size: {:?}", self.inner.guild_id, user.value(), toc.frame_size);
-                                    show_packet = true;
-                                }
-
-                                if toc.stereo == true {
-                                    debug!("[{}] <{}> Got a stereo packet!", self.inner.guild_id, user.value());
-                                    show_packet = true;
-                                }
-
-                                if show_packet {
-                                    debug!("[{}] <{}> Abnormal TOC [{:02x}]: {toc:?}", self.inner.guild_id, user.value(), opus_data.first().unwrap());
-                                }
-
                                 let opus_update = OpusUpdate {
                                     user: *user,
                                     opus_data,
@@ -196,7 +205,7 @@ impl EventHandler for VoiceReceiver {
                 self.inner.voice_tx.send(voice_update).await.unwrap();
             },
             Ctx::ClientDisconnect(disconnect_data) => {
-                // TODO: Check if we're the last user in the channel, then disconnect.
+                debug!("[{}] <{}> Client disconnected!", self.inner.guild_id, disconnect_data.user_id);
                 let channel_opt = self.inner.call.lock().await.current_channel();
                 if let Some(channel_sid) = channel_opt {
                     match self.inner.guild_id.channels(&self.inner.ctx.http).await {
@@ -207,7 +216,7 @@ impl EventHandler for VoiceReceiver {
                                 let members = channel.members(&self.inner.ctx.cache);
                                 match members {
                                     Ok(members) => {
-                                        debug!("[{}] New member list: {members:?}", self.inner.guild_id);
+                                        trace!("[{}] New member list: {}", self.inner.guild_id, fmt_member_list(&members));
                                         if members.len() == 1 {
                                             let own_id = self.inner.ctx.cache.current_user().id;
                                             if members.first().unwrap().user.id == own_id {
@@ -250,5 +259,27 @@ impl Drop for VoiceReceiver {
 impl Drop for InnerReceiver {
     fn drop(&mut self) {
         trace!("InnerReceiver::drop");
+    }
+}
+
+fn fmt_member_list(members: &Vec<Member>) -> String {
+    let mut out = String::new();
+
+    out.push_str("[ ");
+
+    for member in members {
+        out.push_str(format!("{{ {}, \"{}\" }}", member.user.id, member.user.name).as_str());
+    }
+
+    out.push_str(" ]");
+
+    out
+}
+
+fn log_user_id_if_some(user: &Option<Ref<u32, UserId>>) -> String {
+    if let Some(user) = user {
+        format!(" <{}>", user.value())
+    } else {
+        String::new()
     }
 }

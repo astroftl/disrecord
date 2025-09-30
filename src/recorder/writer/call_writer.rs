@@ -3,7 +3,7 @@ use crate::recorder::writer::stream_writer::StreamWriter;
 use crate::recorder::writer::VoiceUpdateType;
 use crate::recorder::{RecordingMetadata, RecordingSummary};
 use dashmap::{DashMap, DashSet};
-use serenity::all::UserId;
+use serenity::all::{GuildId, UserId};
 use std::sync::{Arc, Mutex};
 use chrono::Utc;
 use tokio::sync::oneshot::channel;
@@ -62,21 +62,22 @@ impl CallWriter {
             VoiceUpdateType::User(user_update) => {
                 let user = user_update.user;
 
-                let new_stream = StreamWriter::new(self.metadata.guild_id, user, user_update.username, self.metadata.output_dir.clone()).await;
-                match new_stream {
-                    None => {
-                        error!("[{}] <{}> Failed to create new stream!", self.metadata.guild_id, user);
-                        return;
+                if !self.streams.contains_key(&user) {
+                    trace!("[{}] <{}> Got connection from new user!", self.metadata.guild_id, user);
+                    let tick_count = *self.tick_count.lock().unwrap();
+                    let new_stream = StreamWriter::new(self.metadata.guild_id, user, user_update.username, self.metadata.output_dir.clone(), tick_count).await;
+                    match new_stream {
+                        None => {
+                            error!("[{}] <{}> Failed to create new stream!", self.metadata.guild_id, user);
+                            return;
+                        }
+                        Some(new_stream) => {
+                            self.streams.insert(user, new_stream);
+                            self.known_users.insert(user);
+                        }
                     }
-                    Some(new_stream) => {
-                        let new_stream = Arc::new(new_stream);
-
-                        let tick_count = *self.tick_count.lock().unwrap();
-                        new_stream.fill_silence(tick_count).await;
-
-                        self.streams.insert(user, new_stream.clone());
-                        self.known_users.insert(user);
-                    }
+                } else {
+                    debug!("[{}] <{}> Got reconnect from existing user!", self.metadata.guild_id, user);
                 }
             }
         }
@@ -99,8 +100,9 @@ impl CallWriter {
             known_users.insert(*user);
         }
 
-        let (mix_tx, mix_rx) = channel();
+        let mut mix_rxs = Vec::new();
 
+        let (mix_tx, mix_rx) = channel();
         let mix_path = self.metadata.output_dir.clone();
         let mix_name = format!("{}.opus", self.metadata.output_dir_name);
         let mix_guild_id = self.metadata.guild_id.clone();
@@ -108,9 +110,26 @@ impl CallWriter {
         tokio::spawn(async move {
             mix_files(&mix_input_files, mix_path, mix_name, mix_guild_id, mix_tx).await;
         });
+        mix_rxs.push(mix_rx);
+
+        // LANA-less
+        if self.metadata.guild_id == GuildId::new(560861919217582100) {
+            let (mix_tx, mix_rx) = channel();
+            let mix_path = self.metadata.output_dir.clone();
+            let mix_name = format!("LANAless-{}.opus", self.metadata.output_dir_name);
+            let mix_guild_id = self.metadata.guild_id.clone();
+            let mut mix_input_files = stream_files.clone();
+            mix_input_files.retain(|x| {
+                x.file_name().unwrap().ne("wf_lana.opus")
+            });
+
+            tokio::spawn(async move {
+                mix_files(&mix_input_files, mix_path, mix_name, mix_guild_id, mix_tx).await;
+            });
+            mix_rxs.push(mix_rx);
+        }
 
         let (zip_tx, zip_rx) = channel();
-
         let zip_path = self.metadata.output_dir.clone();
         let zip_name = format!("{}.zip", self.metadata.output_dir_name);
         let zip_guild_id = self.metadata.guild_id.clone();
@@ -124,7 +143,7 @@ impl CallWriter {
             ended: Utc::now(),
             known_users,
             zip_rx,
-            mix_rx,
+            mix_rxs,
         })
     }
 }

@@ -1,6 +1,7 @@
 use std::cmp::min;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use rand::Rng;
 use serenity::all::{GuildId, UserId};
 use tokio::fs::File;
@@ -62,7 +63,7 @@ pub struct StreamWriter {
 
 impl StreamWriter {
     // TODO: Pass in a TOC so we can move away from assuming constant Discord bandwidths?
-    pub async fn new(guild_id: GuildId, user_id: UserId, user_name: Option<String>, output_dir: PathBuf) -> Option<Self> {
+    pub async fn new(guild_id: GuildId, user_id: UserId, user_name: Option<String>, output_dir: PathBuf, tick_count: usize) -> Option<Arc<Self>> {
         let rand_serial = rand::rng().random::<u32>();
 
         if let Err(e) = tokio::fs::create_dir_all(output_dir.clone()).await {
@@ -87,16 +88,19 @@ impl StreamWriter {
                     packet_buffer: PacketBuffer::new(),
                 };
 
-                let stream = Self {
+                let stream = Arc::new(Self {
                     guild_id,
                     user_id,
                     serial: rand_serial,
                     state: Mutex::new(state),
                     file:  AsyncMutex::new(file),
                     file_path,
-                };
+                });
 
                 stream.start().await;
+                stream.fill_silence(tick_count).await;
+
+                info!("[{guild_id}] <{user_id}> Started recording {} with {tick_count} tick silence prelude!", stream.file_path.file_name().unwrap().display());
 
                 Some(stream)
             }
@@ -189,6 +193,10 @@ impl StreamWriter {
     }
 
     pub async fn fill_silence(&self, ticks: usize) {
+        debug!("[{}] <{}> Filling with {ticks} ticks of silence...", self.guild_id, self.user_id);
+
+        let timer = Instant::now();
+
         let (mut sequence, mut last_granule) = {
             let state = self.state.lock().unwrap();
             (state.sequence, state.granule)
@@ -226,6 +234,9 @@ impl StreamWriter {
                 file.write_all(page_data.as_slice()).await.unwrap();
             }
         }
+
+        let duration = Instant::now().duration_since(timer).as_nanos();
+        trace!("[{}] <{}> Done! Took {duration} ns", self.guild_id, self.user_id);
 
         {
             let mut state = self.state.lock().unwrap();

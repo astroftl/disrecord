@@ -122,6 +122,7 @@ impl Recorder {
     pub async fn finish(&self, ctx: &Context, guild_id: GuildId) -> Result<RecordingSummary, String> {
         let sbird = songbird::get(ctx).await.expect("Songbird doesn't exist!");
 
+        // TODO: Clean up by getting call once, then checking Option and retrieving current_channel
         let has_call = sbird.get(guild_id).is_some();
 
         if has_call {
@@ -150,6 +151,8 @@ impl Recorder {
         }
     }
 
+    // TODO: Move this stuff to commands? Or somewhere else; formatting isn't really Recorder stuff
+    // Also, that would clean up duplicate code from /finish
     pub async fn finish_self(&self, ctx: &Context, guild_id: GuildId) {
         if let Ok(metadata) = self.finish(ctx, guild_id).await {
             if let Some((_, (cmd_channel, resp_msg))) = self.resp_messages.remove(&guild_id) {
@@ -214,7 +217,7 @@ impl Recorder {
 
                                 if let Err(e) = cmd_channel.send_message(ctx, followup).await {
                                     error!("Error sending followup to the interaction: {e:?}");
-                                    let mut followup = CreateMessage::new().content(format!("Failed to send .zip (file too large?): {e:?}"));
+                                    let mut followup = CreateMessage::new().content("Failed to send .zip (file too large?)");
 
                                     if let Some(posted_message) = &posted_message {
                                         let mut msg_ref = MessageReference::from(posted_message);
@@ -237,29 +240,20 @@ impl Recorder {
                     }
                 }
 
-                match metadata.mix_rx.await {
-                    Ok(x) => {
-                        match x {
-                            Ok(mix_path) => {
-                                let fup_attachment = match CreateAttachment::path(mix_path).await {
-                                    Ok(x) => x,
-                                    Err(e) => {
-                                        error!("Failed to create attachment: {e:?}");
-                                        return;
-                                    }
-                                };
+                for mix_rx in metadata.mix_rxs {
+                    match mix_rx.await {
+                        Ok(x) => {
+                            match x {
+                                Ok(mix_path) => {
+                                    let fup_attachment = match CreateAttachment::path(mix_path).await {
+                                        Ok(x) => x,
+                                        Err(e) => {
+                                            error!("Failed to create attachment: {e:?}");
+                                            return;
+                                        }
+                                    };
 
-                                let mut followup = CreateMessage::new().add_file(fup_attachment);
-
-                                if let Some(posted_message) = &posted_message {
-                                    let mut msg_ref = MessageReference::from(posted_message);
-                                    msg_ref.fail_if_not_exists = Some(false);
-                                    followup = followup.reference_message(msg_ref);
-                                }
-
-                                if let Err(e) = cmd_channel.send_message(ctx, followup).await {
-                                    error!("Error sending followup to the interaction: {e:?}");
-                                    let mut followup = CreateMessage::new().content(format!("Failed to send mixed .opus (file too large?): {e:?}"));
+                                    let mut followup = CreateMessage::new().add_file(fup_attachment);
 
                                     if let Some(posted_message) = &posted_message {
                                         let mut msg_ref = MessageReference::from(posted_message);
@@ -268,17 +262,28 @@ impl Recorder {
                                     }
 
                                     if let Err(e) = cmd_channel.send_message(ctx, followup).await {
-                                        error!("Error sending followup to explain why the followup failed (ironic): {e:?}");
+                                        error!("Error sending followup to the interaction: {e:?}");
+                                        let mut followup = CreateMessage::new().content("Failed to send mixed .opus (file too large?)");
+
+                                        if let Some(posted_message) = &posted_message {
+                                            let mut msg_ref = MessageReference::from(posted_message);
+                                            msg_ref.fail_if_not_exists = Some(false);
+                                            followup = followup.reference_message(msg_ref);
+                                        }
+
+                                        if let Err(e) = cmd_channel.send_message(ctx, followup).await {
+                                            error!("Error sending followup to explain why the followup failed (ironic): {e:?}");
+                                        }
                                     }
                                 }
-                            }
-                            Err(e) => {
-                                error!("Failed to mix recordings: {e:?}");
+                                Err(e) => {
+                                    error!("Failed to mix recordings: {e:?}");
+                                }
                             }
                         }
-                    }
-                    Err(e) => {
-                        error!("Failed to receive mixer message: {e:?}");
+                        Err(e) => {
+                            error!("Failed to receive mixer message: {e:?}");
+                        }
                     }
                 }
             } else {
