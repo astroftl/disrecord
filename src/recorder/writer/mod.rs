@@ -6,8 +6,9 @@ mod mixer;
 
 pub use muxer::opus_toc;
 
+use crate::config::AppConfig;
 use crate::recorder::writer::call_writer::CallWriter;
-use crate::recorder::{RecorderConfig, RecordingMetadata, RecordingSummary};
+use crate::recorder::{RecordingMetadata, RecordingSummary};
 use chrono::Utc;
 use dashmap::DashMap;
 use serenity::all::{GuildId, UserId};
@@ -40,12 +41,12 @@ pub struct VoiceUpdate {
 
 #[derive(Debug)]
 pub struct Writer {
-    config: RecorderConfig,
+    config: Arc<AppConfig>,
     calls: DashMap<GuildId, Arc<CallWriter>>,
 }
 
 impl Writer {
-    pub fn new(config: RecorderConfig) -> Self {
+    pub fn new(config: Arc<AppConfig>) -> Self {
         Self {
             config,
             calls: DashMap::new(),
@@ -54,8 +55,8 @@ impl Writer {
 
     pub fn start(&self, guild_id: GuildId) {
         let started = Utc::now();
-        let output_dir_name = started.format(self.config.subdir_fmt.as_str()).to_string();
-        let output_dir = self.config.base_dir.join(format!("{}", guild_id)).join(output_dir_name.as_str());
+        let output_dir_name = started.format(self.config.date_format.as_str()).to_string();
+        let output_dir = self.config.record_dir.join(format!("{}", guild_id)).join(output_dir_name.as_str());
 
         let rec_metadata = RecordingMetadata {
             guild_id,

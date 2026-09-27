@@ -24,9 +24,3 @@ pub struct RecordingSummary {
     pub zip_rx: Receiver<Result<PathBuf, String>>,
     pub mix_rxs: Vec<Receiver<Result<PathBuf, String>>>,
 }
-
-#[derive(Clone, Debug)]
-pub struct RecorderConfig {
-    pub base_dir: PathBuf,
-    pub subdir_fmt:  String,
-}

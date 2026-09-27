@@ -1,16 +1,19 @@
 [package]
 name = "disrecord"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
 log = { version = "0.4", features = ["release_max_level_debug"] }
 chrono = "0.4"
 fern = { version = "0.7", features = ["colored"] }
-dotenv = "0.15"
-rand = "0.9"
+rand = "0.10"
 tokio = { version = "1.45", features = ["full"] }
 serenity = { version = "0.12", default-features = false, features = ["full"] }
-songbird = {  version = "0.5", default-features = true, features = ["receive"] }
-dashmap = "6.1"
+songbird = {  version = "0.6", default-features = true, features = ["receive"] }
+dashmap = "6.2"
 async_zip = { version = "0.0", features = ["full"]}
+serde = "1.0"
+toml = { version = "1.1", features = ["parse", "serde"] }
+strfmt = "0.2"
+shlex = "2.0"

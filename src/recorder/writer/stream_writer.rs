@@ -1,15 +1,15 @@
+use crate::recorder::writer::muxer::ogg::{MAX_SEGMENTS_PER_FRAME, OggHeader, OggSegments};
+use crate::recorder::writer::muxer::ogg_opus::{CommentHeader, IdHeader, MappingFamily, PRESKIP_DEFAULT};
+use crate::recorder::writer::muxer::opus_toc::{Bandwidth, OpusToc};
+use rand::RngExt;
+use serenity::all::{GuildId, UserId};
 use std::cmp::min;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use rand::Rng;
-use serenity::all::{GuildId, UserId};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex as AsyncMutex;
-use crate::recorder::writer::muxer::ogg::{OggHeader, OggSegments, MAX_SEGMENTS_PER_FRAME};
-use crate::recorder::writer::muxer::ogg_opus::{CommentHeader, IdHeader, MappingFamily, PRESKIP_DEFAULT};
-use crate::recorder::writer::muxer::opus_toc::{Bandwidth, OpusToc};
 
 const DISCORD_BANDWIDTH: Bandwidth = Bandwidth::Fullband;
 const SILENCE_PACKET: [u8; 3] = [0xF8, 0xFF, 0xFE];

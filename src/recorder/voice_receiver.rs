@@ -1,44 +1,19 @@
-use std::fmt::Debug;
-use crate::recorder::writer::{OpusUpdate, UserUpdate, VoiceUpdate, VoiceUpdateType};
-use dashmap::{DashMap};
-use serenity::async_trait;
-use serenity::model::id::UserId;
-use serenity::model::voice_gateway::payload::Speaking;
-use songbird::packet::FromPacket;
-use songbird::{Call, EventContext, EventHandler};
-use std::sync::Arc;
-use dashmap::mapref::one::Ref;
-use serenity::all::{Cache, CacheHttp, ChannelId, Context, GuildId, Http, Member};
-use songbird::packet::rtp::RtpExtensionPacket;
-use tokio::sync::mpsc::Sender;
-use tokio::sync::Mutex;
 use crate::recorder::recorder::Recorder;
 use crate::recorder::writer::opus_toc::{FrameCount, FrameSize, OpusMode, OpusToc};
-
-#[derive(Clone, Debug)]
-struct CtxHolder {
-    http: Arc<Http>,
-    cache: Arc<Cache>,
-}
-
-impl CacheHttp for CtxHolder {
-    fn http(&self) -> &Http {
-        &self.http
-    }
-
-    fn cache(&self) -> Option<&Arc<Cache>> {
-        Some(&self.cache)
-    }
-}
-
-impl From<&Context> for CtxHolder {
-    fn from(value: &Context) -> Self {
-        Self {
-            http: value.http.clone(),
-            cache: value.cache.clone(),
-        }
-    }
-}
+use crate::recorder::writer::{OpusUpdate, UserUpdate, VoiceUpdate, VoiceUpdateType};
+use dashmap::mapref::one::Ref;
+use dashmap::DashMap;
+use serenity::all::{ChannelId, Context, GuildId, Member};
+use serenity::async_trait;
+use serenity::model::id::UserId;
+use songbird::model::payload::Speaking;
+use songbird::packet::FromPacket;
+use songbird::packet::rtp::RtpExtensionPacket;
+use songbird::{Call, EventContext, EventHandler};
+use std::fmt::Debug;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tokio::sync::mpsc::Sender;
 
 #[derive(Clone, Debug)]
 pub struct VoiceReceiver {
@@ -222,7 +197,7 @@ impl EventHandler for VoiceReceiver {
                                             if members.first().unwrap().user.id == own_id {
                                                 info!("[{}] All members have left the channel, ending the recording!", self.inner.guild_id);
                                                 let recorder = Recorder::get(&self.inner.ctx).await.unwrap();
-                                                recorder.finish_self(&self.inner.ctx, self.inner.guild_id).await;
+                                                recorder.handle_finish(&self.inner.ctx, self.inner.guild_id, None).await;
                                             } else {
                                                 warn!("[{}] Voice channel only has one person, and it's not us!", self.inner.guild_id);
                                             }

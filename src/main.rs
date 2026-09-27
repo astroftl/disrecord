@@ -1,55 +1,83 @@
-#![feature(duration_millis_float)]
 #[macro_use]
 extern crate log;
 
 mod discord;
 mod commands;
 mod recorder;
+mod config;
 
-use crate::recorder::RecorderConfig;
+use crate::config::{AppConfig, OutputConfig};
 use fern::colors::{Color, ColoredLevelConfig};
 use log::LevelFilter;
 use recorder::recorder::Recorder;
+use serenity::Client;
 use serenity::all::ApplicationId;
 use serenity::prelude::GatewayIntents;
-use serenity::Client;
 use songbird::driver::DecodeMode;
 use songbird::{Config, SerenityInit};
-use std::env;
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::sync::Arc;
+use std::{env, fs};
 
-fn main() {
-    dotenv::dotenv().ok();
+fn main() -> ExitCode {
     setup_logger();
-
     bot()
 }
 
 #[tokio::main]
-async fn bot() {
-    let bot_token = env::var("BOT_TOKEN").expect("Expected a BOT_TOKEN in the environment");
+async fn bot() -> ExitCode {
+    let config_file = PathBuf::from(env::var("CONFIG_FILE").unwrap_or(String::from("config.toml")));
+    let config: Arc<AppConfig> = match fs::read_to_string(config_file) {
+        Ok(str) => {
+            match toml::from_str(&str) {
+                Ok(config) => Arc::new(config),
+                Err(e) => {
+                    error!("Error parsing config: {e:?}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        },
+        Err(e) => {
+            error!("Error reading config: {e:?}");
+            let bot_token = env::var("BOT_TOKEN").expect("Expected a BOT_TOKEN in the environment");
+            let app_id: ApplicationId = env::var("APP_ID").expect("Expected an APP_ID in the environment")
+                .parse().expect("APP_ID is not a valid ID");
 
-    let app_id: ApplicationId = env::var("APP_ID").expect("Expected an APP_ID in the environment")
-        .parse().expect("APP_ID is not a valid ID");
+            Arc::new(AppConfig {
+                bot_token,
+                app_id,
+                record_dir: PathBuf::from(env::var("RECORD_DIR").unwrap_or(String::from("recordings"))),
+                date_format: env::var("DATE_FORMAT").unwrap_or(String::from("%Y_%m_%d_%H_%M_%S")),
+                default_output: OutputConfig {
+                    embed_files: match env::var("EMBED_FILES") {
+                        Ok(str) => {
+                            match str.trim().to_lowercase().as_str() {
+                                "false" | "no" | "0" => Some(false),
+                                _ => Some(true) // anything that isn't false, no, or 0 is treated as truthy
+                            }
+                        }
+                        Err(_) => Some(false)
+                    },
+                    post_command: env::var("POST_FILE_COMMAND").ok()
+                },
+                server_output: Default::default(),
+            })
+        }
+    };
 
-    let recording_path = env::var("RECORD_DIR").unwrap_or(String::from("recordings"));
+
 
     let intents = GatewayIntents::non_privileged();
 
     let songbird_config = Config::default()
         .decode_mode(DecodeMode::Decrypt);
 
-    let record_config = RecorderConfig {
-        base_dir: PathBuf::from(recording_path),
-        subdir_fmt: "%Y_%m_%d_%H_%M_%S".to_string(),
-    };
+    let recorder = Arc::new(Recorder::new(config.clone()));
 
-    let recorder = Arc::new(Recorder::new(record_config));
-
-    let mut client = Client::builder(&bot_token, intents)
+    let mut client = Client::builder(&config.bot_token, intents)
         .event_handler(discord::Events)
-        .application_id(app_id)
+        .application_id(config.app_id)
         .register_songbird_from_config(songbird_config)
         .type_map_insert::<Recorder>(recorder)
         .await
@@ -61,7 +89,9 @@ async fn bot() {
         error!("Client error: {:?}", why);
     }
 
-    info!("Goodbye!")
+    info!("Goodbye!");
+
+    ExitCode::SUCCESS
 }
 
 fn setup_logger() {
