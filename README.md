@@ -34,7 +34,7 @@ Additionally, for the per-user, per-mix, and zip post commands:
 For `POST_CMD_ALL`:
 - `{files}`: all of the files, quoted (ex: `"path/to/user1.opus" "path/to/user2.opus" "path/to/recording.zip"`
 
-An example script to upload files to a copyparty instance is found at [example_copyparty_upload.sh]
+An example script to upload files to a copyparty instance is found at [example_copyparty_upload.sh](example_copyparty_upload.sh)
 
 # Configuration
 For much more flexibility, a configuration YAML may be provided. When a config file is present, all environment variables (except for `LOG_LEVEL` and `LOG_LEVEL_ALL`) are overwritten.
@@ -71,7 +71,7 @@ server_output:
 ```
 
 # Installation
-The suggested method of installing disrecord is via Docker. This image is not published. To use, pull this repo and run `docker compose build`. See the [compose.yml] for more details.
+The suggested method of installing disrecord is via Docker. This image is not published. To use, pull this repo and run `docker compose build`. See the [compose.yml](compose.yml) for more details.
 
 To get started quickly:
 - `mkdir recordings`
