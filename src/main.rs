@@ -11,10 +11,10 @@ use fern::colors::{Color, ColoredLevelConfig};
 use log::LevelFilter;
 use recorder::recorder::Recorder;
 use serenity::Client;
-use serenity::all::ApplicationId;
 use serenity::prelude::GatewayIntents;
 use songbird::driver::DecodeMode;
 use songbird::{Config, SerenityInit};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -22,15 +22,46 @@ use std::{env, fs};
 
 fn main() -> ExitCode {
     setup_logger();
+
+    // let demo_config = AppConfig {
+    //     bot_token: "bot_token".to_string(),
+    //     app_id: ApplicationId::from(1234567890),
+    //     record_dir: "recordings".to_string().parse().unwrap(),
+    //     date_format: "%Y_%m_%d_%H_%M_%S".to_string(),
+    //     default_output: OutputConfig {
+    //         zip_files: Some(true),
+    //         custom_mixes: None,
+    //         embed_files: Some(true),
+    //         post_cmd_per_file: Some("cat {file}".to_string()),
+    //         post_cmd_all: Some("curl {files}".to_string()),
+    //     },
+    //     server_output: HashMap::from([
+    //         (GuildId::from(9814524), OutputConfig {
+    //             zip_files: Some(false),
+    //             custom_mixes: Some(HashMap::from([
+    //                 ("LANAless".to_string(), vec![MixType::Exclude(vec!["lana".to_string()])]),
+    //             ])),
+    //             embed_files: Some(false),
+    //             post_cmd_per_file: None,
+    //             post_cmd_all: Some("special curl {files}".to_string()),
+    //         })
+    //     ]),
+    // };
+    //
+    // debug!("{demo_config:?}");
+    //
+    // let yaml = yaml_serde::to_string(&demo_config).unwrap();
+    // fs::write("demo.yml", yaml).unwrap();
+
     bot()
 }
 
 #[tokio::main]
 async fn bot() -> ExitCode {
-    let config_file = PathBuf::from(env::var("CONFIG_FILE").unwrap_or(String::from("config.toml")));
+    let config_file = PathBuf::from(env::var("CONFIG_FILE").unwrap_or(String::from("config.yml")));
     let config: Arc<AppConfig> = match fs::read_to_string(config_file) {
         Ok(str) => {
-            match toml::from_str(&str) {
+            match yaml_serde::from_str(&str) {
                 Ok(config) => Arc::new(config),
                 Err(e) => {
                     error!("Error parsing config: {e:?}");
@@ -39,17 +70,23 @@ async fn bot() -> ExitCode {
             }
         },
         Err(e) => {
-            error!("Error reading config: {e:?}");
-            let bot_token = env::var("BOT_TOKEN").expect("Expected a BOT_TOKEN in the environment");
-            let app_id: ApplicationId = env::var("APP_ID").expect("Expected an APP_ID in the environment")
-                .parse().expect("APP_ID is not a valid ID");
-
+            error!("Error reading config: {e:?}\nUsing environment vars...");
             Arc::new(AppConfig {
-                bot_token,
-                app_id,
+                bot_token: env::var("BOT_TOKEN").expect("Expected a BOT_TOKEN in the environment"),
+                app_id: env::var("APP_ID").expect("Expected an APP_ID in the environment").parse().expect("APP_ID is not a valid ID"),
                 record_dir: PathBuf::from(env::var("RECORD_DIR").unwrap_or(String::from("recordings"))),
                 date_format: env::var("DATE_FORMAT").unwrap_or(String::from("%Y_%m_%d_%H_%M_%S")),
                 default_output: OutputConfig {
+                    zip_files: match env::var("ZIP_FILES") {
+                        Ok(str) => {
+                            match str.trim().to_lowercase().as_str() {
+                                "false" | "no" | "0" => Some(false),
+                                _ => Some(true) // anything that isn't false, no, or 0 is treated as truthy
+                            }
+                        }
+                        Err(_) => None
+                    },
+                    custom_mixes: None,
                     embed_files: match env::var("EMBED_FILES") {
                         Ok(str) => {
                             match str.trim().to_lowercase().as_str() {
@@ -57,16 +94,19 @@ async fn bot() -> ExitCode {
                                 _ => Some(true) // anything that isn't false, no, or 0 is treated as truthy
                             }
                         }
-                        Err(_) => Some(false)
+                        Err(_) => None
                     },
-                    post_command: env::var("POST_FILE_COMMAND").ok()
+                    post_cmd_per_user: env::var("POST_CMD_PER_USER").ok(),
+                    post_cmd_per_mix: env::var("POST_CMD_PER_MIX").ok(),
+                    post_cmd_zip: env::var("POST_CMD_ZIP").ok(),
+                    post_cmd_all: env::var("POST_CMD_ALL").ok(),
                 },
-                server_output: Default::default(),
+                server_output: HashMap::new(),
             })
         }
     };
 
-
+    debug!("Config loaded: {config:?}");
 
     let intents = GatewayIntents::non_privileged();
 

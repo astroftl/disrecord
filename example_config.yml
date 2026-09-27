@@ -1,0 +1,26 @@
+bot_token: put_your_bot_token_here
+app_id: 1234567890
+
+record_dir: /recordings
+date_format: '%Y_%m_%d_%H_%M_%S'
+
+default_output:
+  zip_files: true
+  embed_files: true
+  # also available: {guild} and {time}
+  post_cmd_per_user: echo "{filename}" # runs on each of the per-user streams
+  post_cmd_per_mix: ls {file} # runs on each of the mixes (master mix always + any custom mixes)
+  post_cmd_zip: ls {file} # runs on the zip (if created)
+  post_cmd_all: ls {files} # runs on all of the above in a batch (note {files}, plural; also no {filename})
+
+# server outputs replace ALL fields from default_output
+# values not provided are unset
+server_output:
+  0123456789:
+    embed_files: false
+    post_cmd_per_mix: curl -T {file} http://localhost
+    post_cmd_all: /config/do_something_special.sh {files}
+    custom_mixes:
+      quieter:
+      - !Exclude
+        - annoying_person

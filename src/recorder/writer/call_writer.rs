@@ -7,21 +7,24 @@ use serenity::all::{GuildId, UserId};
 use std::sync::{Arc, Mutex};
 use chrono::Utc;
 use tokio::sync::oneshot::channel;
+use crate::config::{AppConfig, MixType};
 use crate::recorder::writer::mixer::mix_files;
 use crate::recorder::writer::zipper::zip_files;
 
 #[derive(Debug)]
 pub struct CallWriter {
     metadata: RecordingMetadata,
+    config: Arc<AppConfig>,
     streams: DashMap<UserId, Arc<StreamWriter>>,
     known_users: DashSet<UserId>,
     tick_count: Mutex<usize>,
 }
 
 impl CallWriter {
-    pub fn new(metadata: RecordingMetadata) -> Self {
+    pub fn new(metadata: RecordingMetadata, config: Arc<AppConfig>) -> Self {
         Self {
             metadata,
+            config,
             streams: DashMap::new(),
             known_users: DashSet::new(),
             tick_count: Mutex::new(0),
@@ -104,44 +107,61 @@ impl CallWriter {
 
         let (mix_tx, mix_rx) = channel();
         let mix_path = self.metadata.output_dir.clone();
-        let mix_name = format!("{}.opus", self.metadata.output_dir_name);
+        let mix_output = format!("{}.opus", self.metadata.output_dir_name);
         let mix_guild_id = self.metadata.guild_id.clone();
         let mix_input_files = stream_files.clone();
         tokio::spawn(async move {
-            mix_files(&mix_input_files, mix_path, mix_name, mix_guild_id, mix_tx).await;
+            mix_files(&mix_input_files, mix_path, mix_output, mix_guild_id, mix_tx).await;
         });
         mix_rxs.push(mix_rx);
 
-        // LANA-less
-        if self.metadata.guild_id == GuildId::new(560861919217582100) {
-            let (mix_tx, mix_rx) = channel();
-            let mix_path = self.metadata.output_dir.clone();
-            let mix_name = format!("LANAless-{}.opus", self.metadata.output_dir_name);
-            let mix_guild_id = self.metadata.guild_id.clone();
-            let mut mix_input_files = stream_files.clone();
-            mix_input_files.retain(|x| {
-                x.file_name().unwrap().ne("wf_lana.opus")
-            });
+        if let Some(custom_mixes) = &self.config.get_output(&self.metadata.guild_id).custom_mixes {
+            for (custom_mix_name, custom_mix_type) in custom_mixes {
+                debug!("Performing custom mix {custom_mix_name}: {custom_mix_type:?}");
+                let (custom_mix_tx, custom_mix_rx) = channel();
+                let custom_mix_path = self.metadata.output_dir.clone();
+                let custom_mix_output = format!("{custom_mix_name}-{}.opus", self.metadata.output_dir_name);
+                let custom_mix_guild_id = self.metadata.guild_id.clone();
+                let mut custom_mix_input_files = stream_files.clone();
 
-            tokio::spawn(async move {
-                mix_files(&mix_input_files, mix_path, mix_name, mix_guild_id, mix_tx).await;
-            });
-            mix_rxs.push(mix_rx);
+                for custom_type in custom_mix_type {
+                    match custom_type {
+                        MixType::Exclude(names) => {
+                            for name in names {
+                                custom_mix_input_files.retain(|x| {
+                                    x.file_name().unwrap().ne("{name}.opus")
+                                });
+                            }
+                        }
+                    }
+                }
+
+                tokio::spawn(async move {
+                    mix_files(&custom_mix_input_files, custom_mix_path, custom_mix_output, custom_mix_guild_id, custom_mix_tx).await;
+                });
+                mix_rxs.push(custom_mix_rx);
+            }
         }
 
-        let (zip_tx, zip_rx) = channel();
-        let zip_path = self.metadata.output_dir.clone();
-        let zip_name = format!("{}.zip", self.metadata.output_dir_name);
-        let zip_guild_id = self.metadata.guild_id.clone();
-        let zip_input_files = stream_files.clone();
-        tokio::spawn(async move {
-            zip_files(&zip_input_files, zip_path, zip_name, zip_guild_id, zip_tx).await;
-        });
+        let zip_rx = if self.config.get_output(&self.metadata.guild_id).zip_files.unwrap_or(false) {
+            let (zip_tx, zip_rx) = channel();
+            let zip_path = self.metadata.output_dir.clone();
+            let zip_output = format!("{}.zip", self.metadata.output_dir_name);
+            let zip_guild_id = self.metadata.guild_id.clone();
+            let zip_input_files = stream_files.clone();
+            tokio::spawn(async move {
+                zip_files(&zip_input_files, zip_path, zip_output, zip_guild_id, zip_tx).await;
+            });
+            Some(zip_rx)
+        } else {
+            None
+        };
 
         Some(RecordingSummary {
             started: self.metadata.started.clone(),
             ended: Utc::now(),
             known_users,
+            stream_files,
             zip_rx,
             mix_rxs,
         })

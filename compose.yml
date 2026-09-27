@@ -1,0 +1,12 @@
+services:
+  disrecord:
+    build:
+      context: .
+      target: final
+    container_name: disrecord
+    environment:
+      - CONFIG_FILE=/config/config.yml
+    volumes:
+      - ./recordings:/recordings
+      - ./config:/config
+    restart: unless-stopped

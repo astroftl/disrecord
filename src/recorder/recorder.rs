@@ -6,6 +6,7 @@ use dashmap::DashMap;
 use serenity::all::{ChannelId, CommandInteraction, Context, CreateAttachment, CreateEmbed, CreateEmbedFooter, CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, EditInteractionResponse, GuildId, Message, MessageReference};
 use songbird::CoreEvent;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
@@ -248,98 +249,53 @@ impl Recorder {
                     }
                 };
 
-                match metadata.zip_rx.await {
-                    Ok(x) => {
-                        match x {
-                            Ok(zip_path) => {
-                                if self.config.get_output(&guild_id).embed_files.unwrap_or(false) {
-                                    let fup_attachment = match CreateAttachment::path(zip_path.clone()).await {
-                                        Ok(x) => x,
-                                        Err(e) => {
-                                            error!("Failed to create attachment: {e:?}");
-                                            return;
-                                        }
-                                    };
+                let mut all_files = metadata.stream_files.clone();
 
-                                    let mut followup = CreateMessage::new().add_file(fup_attachment);
+                if let Some(post_user_cmd) = &self.config.get_output(&guild_id).post_cmd_per_user {
+                    for user in metadata.stream_files {
+                        let format_vars: HashMap<String, String> = HashMap::from([
+                            ("file".to_string(), user.to_string_lossy().to_string()),
+                            ("filename".to_string(), user.file_name().unwrap().to_string_lossy().to_string()),
+                            ("guild".to_string(), guild_id.to_string()),
+                            ("time".to_string(), metadata.started.format(self.config.date_format.as_str()).to_string()),
+                        ]);
 
-                                    if let Some(posted_message) = &report_message.message {
-                                        let mut msg_ref = MessageReference::from(posted_message);
-                                        msg_ref.fail_if_not_exists = Some(false);
-                                        followup = followup.reference_message(msg_ref);
+                        let post_cmd_formatted = strfmt::strfmt(&post_user_cmd, &format_vars).unwrap();
+                        run_post_command(&post_cmd_formatted, None, ctx).await;
+                    }
+                }
+
+                if let Some(zip_rx) = metadata.zip_rx {
+                    match zip_rx.await {
+                        Ok(x) => {
+                            match x {
+                                Ok(zip_path) => {
+                                    if self.config.get_output(&guild_id).embed_files.unwrap_or(false) {
+                                        send_followup_attachment(&zip_path, &report_message, ctx).await;
                                     }
 
-                                    if let Err(e) = report_message.channel.send_message(ctx, followup).await {
-                                        error!("Error sending followup to the interaction: {e:?}");
-                                        let mut followup = CreateMessage::new().content("Failed to send .zip (file too large?)");
+                                    if let Some(post_zip_cmd) = &self.config.get_output(&guild_id).post_cmd_zip {
+                                        let format_vars: HashMap<String, String> = HashMap::from([
+                                            ("file".to_string(), zip_path.to_string_lossy().to_string()),
+                                            ("filename".to_string(), zip_path.file_name().unwrap().to_string_lossy().to_string()),
+                                            ("guild".to_string(), guild_id.to_string()),
+                                            ("time".to_string(), metadata.started.format(self.config.date_format.as_str()).to_string()),
+                                        ]);
 
-                                        if let Some(posted_message) = &report_message.message {
-                                            let mut msg_ref = MessageReference::from(posted_message);
-                                            msg_ref.fail_if_not_exists = Some(false);
-                                            followup = followup.reference_message(msg_ref);
-                                        }
-
-                                        if let Err(e) = report_message.channel.send_message(ctx, followup).await {
-                                            error!("Error sending followup to explain why the followup failed (ironic): {e:?}");
-                                        }
+                                        let post_cmd_formatted = strfmt::strfmt(&post_zip_cmd, &format_vars).unwrap();
+                                        run_post_command(&post_cmd_formatted, Some(&report_message), ctx).await;
                                     }
+
+                                    all_files.push(zip_path);
                                 }
-
-                                if let Some(post_cmd) = &self.config.get_output(&guild_id).post_command {
-                                    let format_vars: HashMap<String, String> = HashMap::from([
-                                        ("filename".to_string(), zip_path.to_string_lossy().to_string()),
-                                        ("guild".to_string(), guild_id.to_string()),
-                                        ("time".to_string(), metadata.started.format(self.config.date_format.as_str()).to_string()),
-                                    ]);
-
-                                    let post_cmd_formatted = strfmt::strfmt(&post_cmd, &format_vars).unwrap();
-                                    if let Some(args) = shlex::split(post_cmd_formatted.as_str()) {
-                                        debug!("[{guild_id}] Executing post command '{}' with args: {:?}", &args[0], &args[1..]);
-                                        match Command::new(&args[0])
-                                            .args(&args[1..])
-                                            .output()
-                                            .await {
-                                            Ok(output) => {
-                                                if output.status.success() {
-                                                    let stdout = String::from_utf8_lossy(&output.stdout);
-                                                    debug!("Post Command Success: {}", stdout);
-                                                    let mut followup = CreateMessage::new().content(stdout);
-                                                    if let Some(posted_message) = &report_message.message {
-                                                        let mut msg_ref = MessageReference::from(posted_message);
-                                                        msg_ref.fail_if_not_exists = Some(false);
-                                                        followup = followup.reference_message(msg_ref);
-                                                    }
-                                                    if let Err(e) = report_message.channel.send_message(ctx, followup).await {
-                                                        error!("Error sending followup to the interaction: {e:?}");
-                                                    }
-                                                } else {
-                                                    let stderr = String::from_utf8_lossy(&output.stderr);
-                                                    error!("Post Command Error: {}", stderr);
-                                                    let mut followup = CreateMessage::new().content(stderr);
-                                                    if let Some(posted_message) = &report_message.message {
-                                                        let mut msg_ref = MessageReference::from(posted_message);
-                                                        msg_ref.fail_if_not_exists = Some(false);
-                                                        followup = followup.reference_message(msg_ref);
-                                                    }
-                                                    if let Err(e) = report_message.channel.send_message(ctx, followup).await {
-                                                        error!("Error sending followup to the interaction: {e:?}");
-                                                    }
-                                                }
-                                            }
-                                            Err(e) => {
-                                                error!("Failed to exec post command with args: {e:?}");
-                                            }
-                                        }
-                                    }
+                                Err(e) => {
+                                    error!("Failed to zip recordings: {e:?}");
                                 }
-                            }
-                            Err(e) => {
-                                error!("Failed to zip recordings: {e:?}");
                             }
                         }
-                    }
-                    Err(e) => {
-                        error!("Failed to receive zipper message: {e:?}");
+                        Err(e) => {
+                            error!("Failed to receive zipper message: {e:?}");
+                        }
                     }
                 }
 
@@ -349,85 +305,22 @@ impl Recorder {
                             match x {
                                 Ok(mix_path) => {
                                     if self.config.get_output(&guild_id).embed_files.unwrap_or(false) {
-                                        let fup_attachment = match CreateAttachment::path(mix_path.clone()).await {
-                                            Ok(x) => x,
-                                            Err(e) => {
-                                                error!("Failed to create attachment: {e:?}");
-                                                return;
-                                            }
-                                        };
-
-                                        let mut followup = CreateMessage::new().add_file(fup_attachment);
-
-                                        if let Some(posted_message) = &report_message.message {
-                                            let mut msg_ref = MessageReference::from(posted_message);
-                                            msg_ref.fail_if_not_exists = Some(false);
-                                            followup = followup.reference_message(msg_ref);
-                                        }
-
-                                        if let Err(e) = report_message.channel.send_message(ctx, followup).await {
-                                            error!("Error sending followup to the interaction: {e:?}");
-                                            let mut followup = CreateMessage::new().content("Failed to send mixed .opus (file too large?)");
-
-                                            if let Some(posted_message) = &report_message.message {
-                                                let mut msg_ref = MessageReference::from(posted_message);
-                                                msg_ref.fail_if_not_exists = Some(false);
-                                                followup = followup.reference_message(msg_ref);
-                                            }
-
-                                            if let Err(e) = report_message.channel.send_message(ctx, followup).await {
-                                                error!("Error sending followup to explain why the followup failed (ironic): {e:?}");
-                                            }
-                                        }
+                                        send_followup_attachment(&mix_path, &report_message, ctx).await;
                                     }
 
-                                    if let Some(post_cmd) = &self.config.get_output(&guild_id).post_command {
+                                    if let Some(post_mix_cmd) = &self.config.get_output(&guild_id).post_cmd_per_mix {
                                         let format_vars: HashMap<String, String> = HashMap::from([
-                                            ("filename".to_string(), mix_path.to_string_lossy().to_string()),
+                                            ("file".to_string(), mix_path.to_string_lossy().to_string()),
+                                            ("filename".to_string(), mix_path.file_name().unwrap().to_string_lossy().to_string()),
                                             ("guild".to_string(), guild_id.to_string()),
                                             ("time".to_string(), metadata.started.format(self.config.date_format.as_str()).to_string()),
                                         ]);
 
-                                        let post_cmd_formatted = strfmt::strfmt(&post_cmd, &format_vars).unwrap();
-                                        if let Some(args) = shlex::split(post_cmd_formatted.as_str()) {
-                                            debug!("[{guild_id}] Executing post command '{}' with args: {:?}", &args[0], &args[1..]);
-                                            match Command::new(&args[0])
-                                                .args(&args[1..])
-                                                .output()
-                                                .await {
-                                                Ok(output) => {
-                                                    if output.status.success() {
-                                                        let stdout = String::from_utf8_lossy(&output.stdout);
-                                                        debug!("Post Command Success: {}", stdout);
-                                                        let mut followup = CreateMessage::new().content(stdout);
-                                                        if let Some(posted_message) = &report_message.message {
-                                                            let mut msg_ref = MessageReference::from(posted_message);
-                                                            msg_ref.fail_if_not_exists = Some(false);
-                                                            followup = followup.reference_message(msg_ref);
-                                                        }
-                                                        if let Err(e) = report_message.channel.send_message(ctx, followup).await {
-                                                            error!("Error sending followup to the interaction: {e:?}");
-                                                        }
-                                                    } else {
-                                                        let stderr = String::from_utf8_lossy(&output.stderr);
-                                                        error!("Post Command Error: {}", stderr);
-                                                        let mut followup = CreateMessage::new().content(stderr);
-                                                        if let Some(posted_message) = &report_message.message {
-                                                            let mut msg_ref = MessageReference::from(posted_message);
-                                                            msg_ref.fail_if_not_exists = Some(false);
-                                                            followup = followup.reference_message(msg_ref);
-                                                        }
-                                                        if let Err(e) = report_message.channel.send_message(ctx, followup).await {
-                                                            error!("Error sending followup to the interaction: {e:?}");
-                                                        }
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    error!("Failed to exec post command with args: {e:?}");
-                                                }
-                                            }
-                                        }
+                                        let post_cmd_formatted = strfmt::strfmt(&post_mix_cmd, &format_vars).unwrap();
+                                        run_post_command(&post_cmd_formatted, Some(&report_message), ctx).await;
                                     }
+
+                                    all_files.push(mix_path);
                                 }
                                 Err(e) => {
                                     error!("Failed to mix recordings: {e:?}");
@@ -438,6 +331,23 @@ impl Recorder {
                             error!("Failed to receive mixer message: {e:?}");
                         }
                     }
+                }
+
+                let all_files_string = all_files
+                    .iter()
+                    .map(|p| format!("\"{}\"", p.to_string_lossy()))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+
+                if let Some(post_all_cmd) = &self.config.get_output(&guild_id).post_cmd_all {
+                    let format_vars: HashMap<String, String> = HashMap::from([
+                        ("files".to_string(), all_files_string),
+                        ("guild".to_string(), guild_id.to_string()),
+                        ("time".to_string(), metadata.started.format(self.config.date_format.as_str()).to_string()),
+                    ]);
+
+                    let post_cmd_formatted = strfmt::strfmt(&post_all_cmd, &format_vars).unwrap();
+                    run_post_command(&post_cmd_formatted, Some(&report_message), ctx).await;
                 }
             }
             Err(e) => {
@@ -456,6 +366,84 @@ impl Recorder {
 
     pub fn set_resp(&self, guild_id: GuildId, resp: (ChannelId, Option<Message>)) {
         self.resp_messages.insert(guild_id, resp);
+    }
+}
+
+async fn run_post_command(post_cmd_formatted: &str, report_message: Option<&FinishResponse>, ctx: &Context) {
+    if let Some(args) = shlex::split(post_cmd_formatted) {
+        debug!("Executing post command '{}' with args: {:?}", &args[0], &args[1..]);
+        match Command::new(&args[0])
+            .args(&args[1..])
+            .output()
+            .await {
+            Ok(output) => {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    debug!("Post Command Success: {}", stdout);
+                    if let Some(report_message) = report_message {
+                        let mut followup = CreateMessage::new().content(stdout);
+                        if let Some(posted_message) = &report_message.message {
+                            let mut msg_ref = MessageReference::from(posted_message);
+                            msg_ref.fail_if_not_exists = Some(false);
+                            followup = followup.reference_message(msg_ref);
+                        }
+                        if let Err(e) = report_message.channel.send_message(ctx, followup).await {
+                            error!("Error sending followup to the interaction: {e:?}");
+                        }
+                    }
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    error!("Post Command Error: {}", stderr);
+                    if let Some(report_message) = report_message {
+                        let mut followup = CreateMessage::new().content(stderr);
+                        if let Some(posted_message) = &report_message.message {
+                            let mut msg_ref = MessageReference::from(posted_message);
+                            msg_ref.fail_if_not_exists = Some(false);
+                            followup = followup.reference_message(msg_ref);
+                        }
+                        if let Err(e) = report_message.channel.send_message(ctx, followup).await {
+                            error!("Error sending followup to the interaction: {e:?}");
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to exec post command with args: {e:?}");
+            }
+        }
+    }
+}
+
+async fn send_followup_attachment(file_path: &PathBuf, report_message: &FinishResponse, ctx: &Context) {
+    let fup_attachment = match CreateAttachment::path(file_path.clone()).await {
+        Ok(x) => x,
+        Err(e) => {
+            error!("Failed to create attachment: {e:?}");
+            return;
+        }
+    };
+
+    let mut followup = CreateMessage::new().add_file(fup_attachment);
+
+    if let Some(posted_message) = &report_message.message {
+        let mut msg_ref = MessageReference::from(posted_message);
+        msg_ref.fail_if_not_exists = Some(false);
+        followup = followup.reference_message(msg_ref);
+    }
+
+    if let Err(e) = report_message.channel.send_message(ctx, followup).await {
+        error!("Error sending followup to the interaction: {e:?}");
+        let mut followup = CreateMessage::new().content(format!("Failed to send {} (file too large?)", file_path.file_name().unwrap().display()).to_string());
+
+        if let Some(posted_message) = &report_message.message {
+            let mut msg_ref = MessageReference::from(posted_message);
+            msg_ref.fail_if_not_exists = Some(false);
+            followup = followup.reference_message(msg_ref);
+        }
+
+        if let Err(e) = report_message.channel.send_message(ctx, followup).await {
+            error!("Error sending followup to explain why the followup failed (ironic): {e:?}");
+        }
     }
 }
 

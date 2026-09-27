@@ -21,6 +21,7 @@ pub struct RecordingSummary {
     pub started: DateTime<Utc>,
     pub ended: DateTime<Utc>,
     pub known_users: HashSet<UserId>,
-    pub zip_rx: Receiver<Result<PathBuf, String>>,
+    pub stream_files: Vec<PathBuf>,
+    pub zip_rx: Option<Receiver<Result<PathBuf, String>>>,
     pub mix_rxs: Vec<Receiver<Result<PathBuf, String>>>,
 }

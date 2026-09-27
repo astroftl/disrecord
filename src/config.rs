@@ -2,14 +2,27 @@ use serde::{Deserialize, Serialize};
 use serenity::all::{ApplicationId, GuildId};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use serde_with::skip_serializing_none;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct OutputConfig {
-    pub embed_files: Option<bool>,
-    pub post_command: Option<String>,
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum MixType {
+    Exclude(Vec<String>),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[skip_serializing_none]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct OutputConfig {
+    pub zip_files: Option<bool>,
+    pub embed_files: Option<bool>,
+    pub post_cmd_per_user: Option<String>,
+    pub post_cmd_per_mix: Option<String>,
+    pub post_cmd_zip: Option<String>,
+    pub post_cmd_all: Option<String>,
+    pub custom_mixes: Option<HashMap<String, Vec<MixType>>>,
+}
+
+#[skip_serializing_none]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AppConfig {
     pub bot_token: String,
     pub app_id: ApplicationId,

@@ -65,7 +65,7 @@ impl Writer {
             started,
         };
 
-        self.calls.insert(guild_id, Arc::new(CallWriter::new(rec_metadata)));
+        self.calls.insert(guild_id, Arc::new(CallWriter::new(rec_metadata, self.config.clone())));
     }
 
     pub async fn finish(&self, guild_id: GuildId) -> Option<RecordingSummary> {

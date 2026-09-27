@@ -2,6 +2,5 @@
 /target/
 /recordings/
 /.env
-/compose.yml
-/config.toml
+/config/
 /*.log
