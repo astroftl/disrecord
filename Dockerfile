@@ -2,7 +2,6 @@ ARG RUST_VERSION=1.98.1
 FROM rust:${RUST_VERSION}-trixie AS build
 WORKDIR /app
 
-RUN rustup update nightly && rustup default nightly
 RUN apt-get update && apt-get install -y cmake
 RUN --mount=type=bind,source=src,target=src \
     --mount=type=bind,source=Cargo.toml,target=Cargo.toml \
@@ -14,7 +13,7 @@ RUN --mount=type=bind,source=src,target=src \
 FROM debian:trixie-slim AS final
 ENV RECORD_DIR=/recordings
 
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl && rm -rf /var/lib/apt/lists/*
 COPY --from=build /bin/disrecord /bin/
 
 CMD ["/bin/disrecord"]
