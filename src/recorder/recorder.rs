@@ -295,36 +295,39 @@ impl Recorder {
                                     let post_cmd_formatted = strfmt::strfmt(&post_cmd, &format_vars).unwrap();
                                     if let Some(args) = shlex::split(post_cmd_formatted.as_str()) {
                                         debug!("[{guild_id}] Executing post command '{}' with args: {:?}", &args[0], &args[1..]);
-                                        let output = Command::new(&args[0])
+                                        match Command::new(&args[0])
                                             .args(&args[1..])
                                             .output()
-                                            .await;
-
-                                        if let Ok(output) = output {
-                                            if output.status.success() {
-                                                let stdout = String::from_utf8_lossy(&output.stdout);
-                                                debug!("Post Command Success: {}", stdout);
-                                                let mut followup = CreateMessage::new().content(stdout);
-                                                if let Some(posted_message) = &report_message.message {
-                                                    let mut msg_ref = MessageReference::from(posted_message);
-                                                    msg_ref.fail_if_not_exists = Some(false);
-                                                    followup = followup.reference_message(msg_ref);
+                                            .await {
+                                            Ok(output) => {
+                                                if output.status.success() {
+                                                    let stdout = String::from_utf8_lossy(&output.stdout);
+                                                    debug!("Post Command Success: {}", stdout);
+                                                    let mut followup = CreateMessage::new().content(stdout);
+                                                    if let Some(posted_message) = &report_message.message {
+                                                        let mut msg_ref = MessageReference::from(posted_message);
+                                                        msg_ref.fail_if_not_exists = Some(false);
+                                                        followup = followup.reference_message(msg_ref);
+                                                    }
+                                                    if let Err(e) = report_message.channel.send_message(ctx, followup).await {
+                                                        error!("Error sending followup to the interaction: {e:?}");
+                                                    }
+                                                } else {
+                                                    let stderr = String::from_utf8_lossy(&output.stderr);
+                                                    error!("Post Command Error: {}", stderr);
+                                                    let mut followup = CreateMessage::new().content(stderr);
+                                                    if let Some(posted_message) = &report_message.message {
+                                                        let mut msg_ref = MessageReference::from(posted_message);
+                                                        msg_ref.fail_if_not_exists = Some(false);
+                                                        followup = followup.reference_message(msg_ref);
+                                                    }
+                                                    if let Err(e) = report_message.channel.send_message(ctx, followup).await {
+                                                        error!("Error sending followup to the interaction: {e:?}");
+                                                    }
                                                 }
-                                                if let Err(e) = report_message.channel.send_message(ctx, followup).await {
-                                                    error!("Error sending followup to the interaction: {e:?}");
-                                                }
-                                            } else {
-                                                let stderr = String::from_utf8_lossy(&output.stderr);
-                                                error!("Post Command Error: {}", stderr);
-                                                let mut followup = CreateMessage::new().content(stderr);
-                                                if let Some(posted_message) = &report_message.message {
-                                                    let mut msg_ref = MessageReference::from(posted_message);
-                                                    msg_ref.fail_if_not_exists = Some(false);
-                                                    followup = followup.reference_message(msg_ref);
-                                                }
-                                                if let Err(e) = report_message.channel.send_message(ctx, followup).await {
-                                                    error!("Error sending followup to the interaction: {e:?}");
-                                                }
+                                            }
+                                            Err(e) => {
+                                                error!("Failed to exec post command with args: {e:?}");
                                             }
                                         }
                                     }
@@ -388,36 +391,39 @@ impl Recorder {
                                         let post_cmd_formatted = strfmt::strfmt(&post_cmd, &format_vars).unwrap();
                                         if let Some(args) = shlex::split(post_cmd_formatted.as_str()) {
                                             debug!("[{guild_id}] Executing post command '{}' with args: {:?}", &args[0], &args[1..]);
-                                            let output = Command::new(&args[0])
+                                            match Command::new(&args[0])
                                                 .args(&args[1..])
                                                 .output()
-                                                .await;
-
-                                            if let Ok(output) = output {
-                                                if output.status.success() {
-                                                    let stdout = String::from_utf8_lossy(&output.stdout);
-                                                    debug!("Post Command Success: {}", stdout);
-                                                    let mut followup = CreateMessage::new().content(stdout);
-                                                    if let Some(posted_message) = &report_message.message {
-                                                        let mut msg_ref = MessageReference::from(posted_message);
-                                                        msg_ref.fail_if_not_exists = Some(false);
-                                                        followup = followup.reference_message(msg_ref);
+                                                .await {
+                                                Ok(output) => {
+                                                    if output.status.success() {
+                                                        let stdout = String::from_utf8_lossy(&output.stdout);
+                                                        debug!("Post Command Success: {}", stdout);
+                                                        let mut followup = CreateMessage::new().content(stdout);
+                                                        if let Some(posted_message) = &report_message.message {
+                                                            let mut msg_ref = MessageReference::from(posted_message);
+                                                            msg_ref.fail_if_not_exists = Some(false);
+                                                            followup = followup.reference_message(msg_ref);
+                                                        }
+                                                        if let Err(e) = report_message.channel.send_message(ctx, followup).await {
+                                                            error!("Error sending followup to the interaction: {e:?}");
+                                                        }
+                                                    } else {
+                                                        let stderr = String::from_utf8_lossy(&output.stderr);
+                                                        error!("Post Command Error: {}", stderr);
+                                                        let mut followup = CreateMessage::new().content(stderr);
+                                                        if let Some(posted_message) = &report_message.message {
+                                                            let mut msg_ref = MessageReference::from(posted_message);
+                                                            msg_ref.fail_if_not_exists = Some(false);
+                                                            followup = followup.reference_message(msg_ref);
+                                                        }
+                                                        if let Err(e) = report_message.channel.send_message(ctx, followup).await {
+                                                            error!("Error sending followup to the interaction: {e:?}");
+                                                        }
                                                     }
-                                                    if let Err(e) = report_message.channel.send_message(ctx, followup).await {
-                                                        error!("Error sending followup to the interaction: {e:?}");
-                                                    }
-                                                } else {
-                                                    let stderr = String::from_utf8_lossy(&output.stderr);
-                                                    error!("Post Command Error: {}", stderr);
-                                                    let mut followup = CreateMessage::new().content(stderr);
-                                                    if let Some(posted_message) = &report_message.message {
-                                                        let mut msg_ref = MessageReference::from(posted_message);
-                                                        msg_ref.fail_if_not_exists = Some(false);
-                                                        followup = followup.reference_message(msg_ref);
-                                                    }
-                                                    if let Err(e) = report_message.channel.send_message(ctx, followup).await {
-                                                        error!("Error sending followup to the interaction: {e:?}");
-                                                    }
+                                                }
+                                                Err(e) => {
+                                                    error!("Failed to exec post command with args: {e:?}");
                                                 }
                                             }
                                         }
